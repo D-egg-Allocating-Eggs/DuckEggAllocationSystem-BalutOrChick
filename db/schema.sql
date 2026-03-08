@@ -1,49 +1,24 @@
-CREATE DATABASE db_duck_egg_allocation;
-USE db_duck_egg_allocation;
+START TRANSACTION;
 
-CREATE TABLE table_admin (
-  admin_id INT AUTO_INCREMENT PRIMARY KEY,
-  full_name VARCHAR(50) NOT NULL,
-  email VARCHAR(50) NOT NULL,
-  password VARCHAR(255) NOT NULL,
-  created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+CREATE TABLE `egg` (
+  `egg_id` int AUTO_INCREMENT PRIMARY KEY,
+  `total_egg` int(11) NOT NULL,
+  `status` varchar(30) NOT NULL,
+  `date_started_incubation` date NOT NULL,
+  `balut_count` int(11) DEFAULT 0,
+  `failed_count` int(11) DEFAULT 0,
+  `chick_count` int(11) DEFAULT 0
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
-CREATE TABLE table_users (
-  user_id INT AUTO_INCREMENT PRIMARY KEY,
-  full_name VARCHAR(50) NOT NULL,
-  email VARCHAR(50),
-  phone_number VARCHAR(15),
-  password VARCHAR(255) NOT NULL,
-  created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+CREATE TABLE `users` (
+  `user_id` int AUTO_INCREMENT PRIMARY KEY,
+  `username` varchar(50) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
-CREATE TABLE egg_batching (
-  batch_id INT AUTO_INCREMENT PRIMARY KEY,
-  user_id INT NOT NULL,
-  total_eggs INT NOT NULL,
-  incubation_start_date DATE NOT NULL,
-  expected_date DATE NOT NULL,
-  status ENUM('incubating','balut','chick','failed') DEFAULT 'incubating',
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (user_id) REFERENCES table_users(user_id)
-);
+CREATE TABLE `user_activity_logs` (
+  `log_id` int AUTO_INCREMENT PRIMARY KEY,
+  `action` varchar(100) DEFAULT NULL,
+  `log_date` timestamp NOT NULL DEFAULT current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
-CREATE TABLE egg_tracking (
-  tracking_id INT AUTO_INCREMENT PRIMARY KEY,
-  batch_id INT NOT NULL,
-  incubation_day INT NOT NULL,
-  note TEXT,
-  recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (batch_id) REFERENCES egg_batching(batch_id)
-);
-
-CREATE TABLE egg_allocating (
-  allocation_id INT AUTO_INCREMENT PRIMARY KEY,
-  batch_id INT NOT NULL,
-  balut_count INT DEFAULT 0,
-  chick_count INT DEFAULT 0,
-  failed_count INT DEFAULT 0,
-  allocation_date DATE NOT NULL,
-  FOREIGN KEY (batch_id) REFERENCES egg_batching(batch_id)
-);
+COMMIT;
