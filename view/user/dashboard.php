@@ -24,7 +24,7 @@ $eggs = $stmt->fetchAll(PDO::FETCH_ASSOC);
     <div class="container">
         <h1>Welcome User!</h1>
         <p><a href="../../logout.php">Logout</a></p>
-        <p>Hello!</p>
+        <p>Hello, user!</p>
     </div>
 </body>
 
