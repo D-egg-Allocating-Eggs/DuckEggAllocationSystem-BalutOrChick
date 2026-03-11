@@ -359,6 +359,7 @@ $logs = $stmt->fetchAll(PDO::FETCH_ASSOC);
         </div>
     </div>
 
+    <!-- functions -->
     <script>
         function openEditModal(id, username) {
             document.getElementById('edit_user_id').value = id;
