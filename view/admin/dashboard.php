@@ -123,6 +123,9 @@ $total_eggs = $stmt->fetchColumn();
 $stmt = $conn->query("SELECT SUM(chick_count) FROM egg");
 $total_chicks = $stmt->fetchColumn();
 
+$stmt = $conn->query("SELECT SUM(failed_count) FROM egg");
+$total_failed = $stmt->fetchColumn();
+
 // Fetch users including admin, sorted by user_id ascending
 $stmt = $conn->query("SELECT * FROM users ORDER BY user_id ASC");
 $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -177,23 +180,31 @@ $logs = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
             <!-- Summary Cards -->
             <div class="cards">
-                <div class="card">
-                    <h3>Total Users</h3>
-                    <p><?= $total_users ?></p>
-                </div>
-                <div class="card">
-                    <h3>Total Batches</h3>
-                    <p><?= $total_batches ?></p>
-                </div>
-                <div class="card">
-                    <h3>Total Eggs</h3>
-                    <p><?= $total_eggs ?? 0 ?></p>
-                </div>
-                <div class="card">
-                    <h3>Total Chicks</h3>
-                    <p><?= $total_chicks ?? 0 ?></p>
-                </div>
-            </div>
+    <div class="card">
+        <h3>Total Users</h3>
+        <p><?= $total_users ?></p>
+    </div>
+
+    <div class="card">
+        <h3>Total Batches</h3>
+        <p><?= $total_batches ?></p>
+    </div>
+
+    <div class="card">
+        <h3>Total Eggs</h3>
+        <p><?= $total_eggs ?? 0 ?></p>
+    </div>
+
+    <div class="card">
+        <h3>Total Chicks</h3>
+        <p><?= $total_chicks ?? 0 ?></p>
+    </div>
+
+    <div class="card">
+        <h3>Total Failed Eggs</h3>
+        <p><?= $total_failed ?? 0 ?></p>
+    </div>
+</div>
 
             <!-- Users Table -->
             <h2>Users</h2>
