@@ -26,12 +26,23 @@ CREATE TABLE
   ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci;
 
 CREATE TABLE
+  egg_daily_logs (
+    log_id INT AUTO_INCREMENT PRIMARY KEY,
+    egg_id INT NOT NULL,
+    day_number INT NOT NULL,
+    failed_count INT DEFAULT 0,
+    balut_count INT DEFAULT 0,
+    chick_count INT DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_daily_egg FOREIGN KEY (egg_id) REFERENCES egg (egg_id) ON DELETE CASCADE
+  );
+
+CREATE TABLE
   user_activity_logs (
     log_id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NULL,
     action VARCHAR(100) NOT NULL,
     log_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
     INDEX idx_user_id (user_id),
     INDEX idx_action (action),
     INDEX idx_log_date (log_date),
