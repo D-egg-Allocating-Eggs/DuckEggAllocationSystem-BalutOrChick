@@ -144,11 +144,14 @@ if (isset($_POST['update_daily'])) {
             $check_stmt->execute([$egg_id, $day_number]);
 
             if ($check_stmt->fetch()) {
-                $_SESSION['error'] = "Daily log for day {$day_number} already exists.";
+                // Show a simple error message without trying to fetch log_date
+                $_SESSION['error'] = "You have already updated this batch for Day {$day_number}. " .
+                    "Each day can only be updated once. You can continue updating tomorrow (Day " . ($day_number + 1) . ").";
             } else {
+                // Process the update...
                 // Insert daily log
                 $log_stmt = $conn->prepare("INSERT INTO egg_daily_logs (egg_id, day_number, failed_count, balut_count, chick_count) 
-                                          VALUES (?, ?, ?, ?, ?)");
+                              VALUES (?, ?, ?, ?, ?)");
                 if ($log_stmt->execute([$egg_id, $day_number, $failed_count, $balut_count, $chick_count])) {
 
                     // Update egg totals
