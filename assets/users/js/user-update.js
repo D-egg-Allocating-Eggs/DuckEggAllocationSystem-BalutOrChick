@@ -179,7 +179,7 @@ function updateUser(event) {
     formData.append('user_role', role);
 
     // Send AJAX request
-    fetch('../../view/users/user-update.php', {
+    fetch('../../controller/user-update.php', {
         method: 'POST',
         body: formData,
         headers: {

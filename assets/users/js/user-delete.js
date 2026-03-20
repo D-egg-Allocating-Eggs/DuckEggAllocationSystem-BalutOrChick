@@ -99,7 +99,7 @@ function executeDelete(userId) {
     formData.append('user_id', userId);
 
     // Send AJAX request
-    fetch('../../view/users/user-delete.php', {
+    fetch('../../controller/user-delete.php', {
         method: 'POST',
         body: formData,
         headers: {
