@@ -11,7 +11,7 @@ error_log("user-update.php accessed");
 error_log("POST data: " . print_r($_POST, true));
 
 try {
-    require_once '../../model/config.php';
+    require_once '../model/config.php';
 
     // Check if user is logged in and is admin
     if (!isset($_SESSION['user_id']) || $_SESSION['user_role'] !== 'admin') {

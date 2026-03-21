@@ -1,5 +1,5 @@
 <?php
-require_once '../../model/config.php';
+require_once '../model/config.php';
 
 // Set header for JSON response
 header('Content-Type: application/json');

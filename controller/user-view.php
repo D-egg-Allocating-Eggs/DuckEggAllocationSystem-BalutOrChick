@@ -41,7 +41,7 @@ if (isset($_POST['delete_user'])) {
             $stmt->execute([$_SESSION['user_id'], $action]);
         }
 
-        echo "<script>window.location.href='../admin/dashboard.php'</script>";
+        echo "<script>window.location.href='../../admin/dashboard.php'</script>";
     }
 }
 

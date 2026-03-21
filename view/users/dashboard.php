@@ -276,7 +276,7 @@ $roles = ['admin', 'manager', 'user'];
                                             <i class="fas fa-eye"></i>
                                         </button>
                                         <?php if ($user['user_id'] != $_SESSION['user_id']): ?>
-                                            <form method="POST" action="../../view/users/user-delete.php" style="display:inline" onsubmit="return confirmDelete()">
+                                            <form method="POST" action="../../controller/user-delete.php" style="display:inline" onsubmit="return confirmDelete()">
                                                 <input type="hidden" name="user_id" value="<?= $user['user_id'] ?>">
                                                 <button type="submit" class="btn-icon delete" title="Delete user">
                                                     <i class="fas fa-trash"></i>

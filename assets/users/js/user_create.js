@@ -66,7 +66,7 @@ function createUser(event) {
     formData.append('user_role', role);
 
     // Send AJAX request
-    fetch('../../view/users/user-create.php', {
+    fetch('../../controller/user-create.php', {
         method: 'POST',
         body: formData,
         headers: {
