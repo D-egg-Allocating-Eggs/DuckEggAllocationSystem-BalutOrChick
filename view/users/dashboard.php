@@ -518,8 +518,7 @@ $roles = ['admin', 'manager', 'user'];
         </div>
     </div>
 
-    <!-- Include only the user creation JavaScript -->
-    <script src="../../assets/js/user-create.js"></script>
+   
 
 
     <!-- View User Details Modal -->
@@ -541,7 +540,7 @@ $roles = ['admin', 'manager', 'user'];
     </div>
 
     <!-- Custom JavaScript -->
-    <script src="../../assets/users/js/user_create.js"></script>
+    <script src="../../assets/users/js/user-create.js"></script>
     <script src="../../assets/users/js/user-delete.js"></script>
     <script>
         // Pass PHP data to JavaScript
