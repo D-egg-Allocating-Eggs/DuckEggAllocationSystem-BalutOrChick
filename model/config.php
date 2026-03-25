@@ -2,9 +2,9 @@
 session_start();
 
 $host = "localhost";
-$dbname = "duck_egg_system";
-$user = "root";
-$pass = "";
+$dbname = "u442411629_duckegg";
+$user = "u442411629_dev_duckegg";
+$pass = "tI24o4^>W_M-";
 
 try {
     $conn = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $user, $pass);
