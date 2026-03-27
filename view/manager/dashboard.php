@@ -9,7 +9,7 @@ if (!isset($_SESSION['user_id']) || $_SESSION['user_role'] !== 'manager') {
 
 $manager_id = $_SESSION['user_id'];
 
-// Helper function to format time ago
+// Helper function to format time as "X minutes/hours/days ago"
 function timeAgo($datetime) {
     if (!$datetime) return 'Never';
     
@@ -184,18 +184,18 @@ if (isset($_POST['distribute_profits'])) {
                 </div>
                 <table class="data-table">
                     <thead>
-                         <tr>
+                        <tr>
                             <th>User</th>
                             <th>Role</th>
                             <th>Joined</th>
                             <th>Batches</th>
                             <th>Total Balut</th>
                             <th>Total Chicks</th>
-                         </tr>
+                        </tr>
                     </thead>
                     <tbody>
                         <?php foreach ($users as $user): ?>
-                         <tr>
+                        <tr>
                             <td>
                                 <div class="user-info">
                                     <div class="avatar"><?= strtoupper(substr($user['username'], 0, 1)) ?></div>
@@ -207,42 +207,38 @@ if (isset($_POST['distribute_profits'])) {
                             <td><?= number_format($user['batch_count']) ?></td>
                             <td><strong><?= number_format($user['total_balut']) ?></strong></td>
                             <td><?= number_format($user['total_chicks']) ?></td>
-                         </tr>
+                        </tr>
                         <?php endforeach; ?>
                     </tbody>
                 </table>
             </div>
 
-            <!-- Recent Activity Logs - Fixed Time Display -->
+            <!-- Recent Activity Logs with "X minutes/hours/days ago" format -->
             <div class="table-container">
                 <div class="table-header">
                     <h3>Recent User Activity</h3>
                 </div>
                 <table class="data-table">
                     <thead>
-                         <tr>
+                        <tr>
                             <th>Time</th>
                             <th>User</th>
                             <th>Action</th>
-                         </tr>
+                        </tr>
                     </thead>
                     <tbody>
                         <?php if (count($logs) > 0): ?>
                             <?php foreach ($logs as $log): ?>
-                             <tr>
+                            <tr>
                                 <td class="activity-time">
                                     <?php 
-                                    // Format the time properly
-                                    if (isset($log['log_date']) && $log['log_date']) {
-                                        echo timeAgo($log['log_date']);
-                                    } else {
-                                        echo 'Unknown';
-                                    }
+                                    // This will display: "Just now", "5 minutes ago", "2 hours ago", "1 day ago", etc.
+                                    echo timeAgo($log['log_date']);
                                     ?>
                                 </td>
                                 <td><?= htmlspecialchars($log['username']) ?></td>
                                 <td><?= htmlspecialchars($log['action']) ?></td>
-                             </tr>
+                            </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
                             <tr>

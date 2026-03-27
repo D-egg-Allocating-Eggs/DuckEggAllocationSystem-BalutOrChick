@@ -6,9 +6,32 @@ if (!isset($_SESSION['user_id']) || $_SESSION['user_role'] !== 'admin') {
     exit;
 }
 
-/* LOG ACCESS */
+// Helper function to format time as "X minutes/hours/days ago"
+function timeAgo($datetime) {
+    if (!$datetime) return 'Never';
+    
+    $now = new DateTime();
+    $ago = new DateTime($datetime);
+    $diff = $now->diff($ago);
+    
+    if ($diff->y > 0) {
+        return $diff->y . ' year' . ($diff->y > 1 ? 's' : '') . ' ago';
+    } elseif ($diff->m > 0) {
+        return $diff->m . ' month' . ($diff->m > 1 ? 's' : '') . ' ago';
+    } elseif ($diff->d > 0) {
+        return $diff->d . ' day' . ($diff->d > 1 ? 's' : '') . ' ago';
+    } elseif ($diff->h > 0) {
+        return $diff->h . ' hour' . ($diff->h > 1 ? 's' : '') . ' ago';
+    } elseif ($diff->i > 0) {
+        return $diff->i . ' minute' . ($diff->i > 1 ? 's' : '') . ' ago';
+    } else {
+        return 'Just now';
+    }
+}
+
+/* LOG ACCESS - FIXED with proper timestamp */
 $action = "Admin opened dashboard";
-$stmt = $conn->prepare("INSERT INTO user_activity_logs (user_id, action) VALUES (?, ?)");
+$stmt = $conn->prepare("INSERT INTO user_activity_logs (user_id, action, log_date) VALUES (?, ?, NOW())");
 $stmt->execute([$_SESSION['user_id'], $action]);
 
 /* USER STATS */
@@ -22,8 +45,8 @@ $total_batches = $conn->query("SELECT COUNT(*) FROM egg")->fetchColumn();
 $total_eggs = $conn->query("SELECT SUM(total_egg) FROM egg")->fetchColumn() ?: 0;
 $total_chicks = $conn->query("SELECT SUM(chick_count) FROM egg")->fetchColumn() ?: 0;
 
-/* FETCH BATCHES */
-$stmt = $conn->query("
+/* FETCH BATCHES - FIXED with proper date handling */
+$stmt = $conn->prepare("
 SELECT e.*, u.username,
        DATEDIFF(NOW(), e.date_started_incubation) as days_in_incubation
 FROM egg e
@@ -31,21 +54,22 @@ JOIN users u ON e.user_id = u.user_id
 ORDER BY e.date_started_incubation DESC
 LIMIT 5
 ");
+$stmt->execute();
 $batches = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-/* ACTIVITY LOGS WITH METRICS */
-$stmt = $conn->query("
+/* ACTIVITY LOGS WITH METRICS - FIXED with proper date filtering */
+$stmt = $conn->prepare("
 SELECT l.*, u.username
 FROM user_activity_logs l
 LEFT JOIN users u ON l.user_id = u.user_id
-ORDER BY log_date DESC
+WHERE l.log_date IS NOT NULL
+ORDER BY l.log_date DESC
 LIMIT 10
 ");
+$stmt->execute();
 $logs = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-/* -------------------------
-ENHANCED ANALYTICS
---------------------------*/
+/* ENHANCED ANALYTICS */
 
 // 1. DAILY ACTIVITY (Last 14 days with trends)
 $dates = [];
@@ -57,8 +81,8 @@ for ($i = 13; $i >= 0; $i--) {
     $dates[] = $date;
 }
 
-// Debug: Check if activity logs table has data
-$checkData = $conn->query("SELECT COUNT(*) as count FROM user_activity_logs")->fetch(PDO::FETCH_ASSOC);
+// Check if activity logs table has data
+$checkData = $conn->query("SELECT COUNT(*) as count FROM user_activity_logs WHERE log_date IS NOT NULL")->fetch(PDO::FETCH_ASSOC);
 $hasLogData = $checkData['count'] > 0;
 
 $stmt = $conn->prepare("
@@ -67,6 +91,7 @@ $stmt = $conn->prepare("
            COUNT(DISTINCT user_id) as unique_users
     FROM user_activity_logs
     WHERE log_date >= DATE_SUB(CURDATE(), INTERVAL 13 DAY)
+      AND log_date IS NOT NULL
     GROUP BY DATE(log_date)
     ORDER BY date
 ");
@@ -99,46 +124,52 @@ foreach ($dates as $date) {
 $avgDailyActivity = $daysWithData > 0 ? round($totalActivity / $daysWithData, 1) : 0;
 
 // 2. HOURLY ACTIVITY PATTERN
-$stmt = $conn->query("
+$stmt = $conn->prepare("
     SELECT HOUR(log_date) as hour, 
            COUNT(*) as count
     FROM user_activity_logs
     WHERE log_date >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+      AND log_date IS NOT NULL
     GROUP BY HOUR(log_date)
     ORDER BY hour
 ");
+$stmt->execute();
 $hourlyActivity = array_fill(0, 24, 0);
 while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
     $hourlyActivity[(int)$row['hour']] = (int)$row['count'];
 }
 
 // 3. TOP ACTIONS WITH TRENDS
-$stmt = $conn->query("
+$stmt = $conn->prepare("
     SELECT action, 
            COUNT(*) as total_count,
            COUNT(DISTINCT user_id) as unique_users,
            MAX(log_date) as last_performed
     FROM user_activity_logs
+    WHERE log_date IS NOT NULL
     GROUP BY action
     ORDER BY total_count DESC
     LIMIT 8
 ");
+$stmt->execute();
 $actionStats = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // 4. USER ENGAGEMENT METRICS
-$stmt = $conn->query("
+$stmt = $conn->prepare("
     SELECT 
         COUNT(DISTINCT user_id) as active_users_7d,
         COUNT(*) as total_actions_7d,
-        AVG(daily_actions) as avg_actions_per_user
+        COALESCE(AVG(daily_actions), 0) as avg_actions_per_user
     FROM (
         SELECT user_id, 
                COUNT(*) as daily_actions
         FROM user_activity_logs
         WHERE log_date >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+          AND log_date IS NOT NULL
         GROUP BY user_id, DATE(log_date)
     ) as daily_user_actions
 ");
+$stmt->execute();
 $engagementMetrics = $stmt->fetch(PDO::FETCH_ASSOC);
 
 // 5. PERFORMANCE METRICS
@@ -172,7 +203,6 @@ $formattedDates = array_map(function ($date) {
     <link rel="stylesheet" href="../../assets/admin/js/css/main_dashboard.css">
 
     <style>
-        /* Debug styles - remove in production */
         .debug-info {
             background: #fff3cd;
             border: 1px solid #ffeeba;
@@ -181,11 +211,21 @@ $formattedDates = array_map(function ($date) {
             border-radius: 8px;
             margin-bottom: 1rem;
             display: none;
-            /* Hide by default, show if no data */
         }
 
         .debug-info.visible {
             display: block;
+        }
+        
+        /* Time display styling */
+        .activity-time {
+            font-size: 0.875rem;
+            color: #64748b;
+        }
+        
+        .tooltip {
+            cursor: help;
+            border-bottom: 1px dashed #94a3b8;
         }
     </style>
 </head>
@@ -312,7 +352,7 @@ $formattedDates = array_map(function ($date) {
                     <div class="stat-value"><?= number_format($total_chicks) ?></div>
                     <div class="stat-trend">
                         <i class="fas fa-chart-line"></i>
-                        <?= $total_batches > 0 ? round(($total_chicks / $total_eggs) * 100, 1) : 0 ?>% hatch rate
+                        <?= $total_eggs > 0 ? round(($total_chicks / $total_eggs) * 100, 1) : 0 ?>% hatch rate
                     </div>
                 </div>
             </div>
@@ -362,7 +402,7 @@ $formattedDates = array_map(function ($date) {
                         </button>
                     </div>
                 </div>
-                <table>
+                <table class="data-table">
                     <thead>
                         <tr>
                             <th>Action</th>
@@ -387,7 +427,9 @@ $formattedDates = array_map(function ($date) {
                                     </td>
                                     <td><strong><?= number_format($action['total_count']) ?></strong></td>
                                     <td><?= $action['unique_users'] ?></td>
-                                    <td><?= date('M j, H:i', strtotime($action['last_performed'])) ?></td>
+                                    <td class="activity-time">
+                                        <?= timeAgo($action['last_performed']) ?>
+                                    </td>
                                     <td>
                                         <div class="frequency-bar">
                                             <div class="frequency-fill" style="width: <?= min(100, ($action['total_count'] / $actionStats[0]['total_count'] * 100)) ?>%;"></div>
@@ -410,7 +452,7 @@ $formattedDates = array_map(function ($date) {
                         View All
                     </a>
                 </div>
-                <table>
+                <table class="data-table">
                     <thead>
                         <tr>
                             <th>Batch #</th>
@@ -431,7 +473,7 @@ $formattedDates = array_map(function ($date) {
                         <?php else: ?>
                             <?php foreach ($batches as $batch): ?>
                                 <tr>
-                                    <td><strong>#<?= $batch['batch_number'] ?></strong></td>
+                                    <td><strong>#<?= htmlspecialchars($batch['batch_number'] ?? $batch['egg_id']) ?></strong></td>
                                     <td>
                                         <span class="status-indicator status-active"></span>
                                         <?= htmlspecialchars($batch['username']) ?>
@@ -442,7 +484,8 @@ $formattedDates = array_map(function ($date) {
                                         <?php
                                         $statusClass = '';
                                         $statusIcon = '';
-                                        switch ($batch['status']) {
+                                        $status = $batch['status'] ?? 'active';
+                                        switch ($status) {
                                             case 'active':
                                                 $statusClass = 'badge-success';
                                                 $statusIcon = 'fa-spinner';
@@ -458,7 +501,7 @@ $formattedDates = array_map(function ($date) {
                                         ?>
                                         <span class="badge <?= $statusClass ?>">
                                             <i class="fas <?= $statusIcon ?>"></i>
-                                            <?= ucfirst($batch['status']) ?>
+                                            <?= ucfirst($status) ?>
                                         </span>
                                     </td>
                                     <td>
@@ -471,7 +514,7 @@ $formattedDates = array_map(function ($date) {
                 </table>
             </div>
 
-            <!-- Recent Activity Logs -->
+            <!-- Recent Activity Logs - FIXED with proper time display -->
             <div class="table-container">
                 <div class="table-header">
                     <h3 class="table-title">Recent Activity</h3>
@@ -482,7 +525,7 @@ $formattedDates = array_map(function ($date) {
                         </button>
                     </div>
                 </div>
-                <table>
+                <table class="data-table">
                     <thead>
                         <tr>
                             <th>Time</th>
@@ -501,12 +544,17 @@ $formattedDates = array_map(function ($date) {
                         <?php else: ?>
                             <?php foreach ($logs as $log): ?>
                                 <tr>
-                                    <td>
-                                        <span class="tooltip" data-tooltip="<?= date('F j, Y H:i:s', strtotime($log['log_date'])) ?>">
-                                            <?= date('H:i', strtotime($log['log_date'])) ?>
-                                        </span>
+                                    <td class="activity-time">
+                                        <?php 
+                                        // Display human-readable time
+                                        if (isset($log['log_date']) && $log['log_date']) {
+                                            echo timeAgo($log['log_date']);
+                                        } else {
+                                            echo 'Unknown';
+                                        }
+                                        ?>
                                     </td>
-                                    <td><?= $log['username'] ?? 'System' ?></td>
+                                    <td><?= htmlspecialchars($log['username'] ?? 'System') ?></td>
                                     <td>
                                         <span class="badge badge-success">
                                             <?= htmlspecialchars($log['action']) ?>
@@ -561,30 +609,41 @@ $formattedDates = array_map(function ($date) {
                 hourlyActivity: [2, 1, 0, 0, 1, 3, 5, 8, 12, 15, 18, 20, 22, 25, 23, 20, 18, 15, 12, 10, 8, 6, 4, 3],
                 peakHour: 13,
                 actionStats: [{
-                        action: 'Login',
-                        total_count: 45,
-                        unique_users: 12,
-                        last_performed: '2024-01-14 15:30:00'
-                    },
-                    {
-                        action: 'View Dashboard',
-                        total_count: 38,
-                        unique_users: 10,
-                        last_performed: '2024-01-14 14:20:00'
-                    },
-                    {
-                        action: 'Create Batch',
-                        total_count: 25,
-                        unique_users: 5,
-                        last_performed: '2024-01-14 13:15:00'
-                    }
-                ]
+                    action: 'Login',
+                    total_count: 45,
+                    unique_users: 12,
+                    last_performed: '2024-01-14 15:30:00'
+                },
+                {
+                    action: 'View Dashboard',
+                    total_count: 38,
+                    unique_users: 10,
+                    last_performed: '2024-01-14 14:20:00'
+                },
+                {
+                    action: 'Create Batch',
+                    total_count: 25,
+                    unique_users: 5,
+                    last_performed: '2024-01-14 13:15:00'
+                }]
             };
 
             if (typeof initializeCharts === 'function') {
                 initializeCharts(sampleData);
                 document.querySelector('.debug-info').style.display = 'none';
             }
+        }
+        
+        function refreshLogs() {
+            location.reload();
+        }
+        
+        function exportToCSV() {
+            alert('Export to CSV functionality would go here');
+        }
+        
+        function toggleChartType(type) {
+            alert('Toggle chart type: ' + type);
         }
     </script>
 </body>
