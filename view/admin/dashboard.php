@@ -955,7 +955,7 @@ $activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'dashboard';
                     </a>
                 </li>
                 <li>
-                    <a href="../users/dashboard.php">
+                    <a href="../users/user-management.php">
                         <i class="fas fa-users"></i>
                         User Management
                     </a>

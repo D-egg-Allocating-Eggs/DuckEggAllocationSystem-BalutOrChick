@@ -500,7 +500,7 @@ if ($reportType === 'userSummary') {
                     <a href="#"><i class="fas fa-tachometer-alt"></i> Overview</a>
                 </li>
                 <li class="nav-item" data-tab="users">
-                    <a href="#"><i class="fas fa-users"></i> User Management</a>
+                    <a href="../users/user-management.php"><i class="fas fa-users"></i> User Management</a>
                 </li>
                 <li class="nav-item" data-tab="analytics">
                     <a href="#"><i class="fas fa-chart-line"></i> Analytics</a>
