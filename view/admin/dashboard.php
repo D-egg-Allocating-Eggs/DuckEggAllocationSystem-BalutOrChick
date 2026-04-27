@@ -33,26 +33,343 @@ function timeAgo($datetime)
     else return 'Just now';
 }
 
-// Log access (once per session)
+// Log access
 if (!isset($_SESSION['admin_dashboard_logged'])) {
     $stmt = $conn->prepare("INSERT INTO user_activity_logs (user_id, action, log_date) VALUES (?, ?, NOW())");
     $stmt->execute([$user_id, "Admin accessed dashboard"]);
     $_SESSION['admin_dashboard_logged'] = true;
 }
 
-// Get active tab from URL parameter
+// Get active tab
 $activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'overview';
 $validTabs = ['overview', 'analytics', 'reports'];
 if (!in_array($activeTab, $validTabs)) {
     $activeTab = 'overview';
 }
 
-// ── REPORT HANDLING ─────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// OVERVIEW TAB STATISTICS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// User Statistics
+$totalUsers = $conn->query("SELECT COUNT(*) FROM users")->fetchColumn();
+$totalAdmins = $conn->query("SELECT COUNT(*) FROM users WHERE user_role='admin'")->fetchColumn();
+$totalManagers = $conn->query("SELECT COUNT(*) FROM users WHERE user_role='manager'")->fetchColumn();
+$totalRegularUsers = $conn->query("SELECT COUNT(*) FROM users WHERE user_role='user'")->fetchColumn();
+
+// User Growth (Last 7 days)
+$userGrowth = [];
+$growthLabels = [];
+for ($i = 6; $i >= 0; $i--) {
+    $date = date('Y-m-d', strtotime("-$i days"));
+    $growthLabels[] = date('M d', strtotime($date));
+    $stmt = $conn->prepare("SELECT COUNT(*) FROM users WHERE DATE(created_at) = ?");
+    $stmt->execute([$date]);
+    $userGrowth[] = (int)$stmt->fetchColumn();
+}
+
+// Production Statistics
+$totalBatches = $conn->query("SELECT COUNT(*) FROM egg")->fetchColumn();
+$totalEggs = $conn->query("SELECT SUM(total_egg) FROM egg")->fetchColumn() ?: 0;
+$totalChicks = $conn->query("SELECT SUM(chick_count) FROM egg")->fetchColumn() ?: 0;
+$totalBalut = $conn->query("SELECT SUM(balut_count) FROM egg")->fetchColumn() ?: 0;
+$totalFailed = $conn->query("SELECT SUM(failed_count) FROM egg")->fetchColumn() ?: 0;
+
+// Success/Failure Rates
+$totalSuccessful = $totalChicks + $totalBalut;
+$successRate = $totalEggs > 0 ? round(($totalSuccessful / $totalEggs) * 100, 1) : 0;
+$failureRate = $totalEggs > 0 ? round(($totalFailed / $totalEggs) * 100, 1) : 0;
+
+// Batch Status Distribution
+$incubatingBatches = $conn->query("SELECT COUNT(*) FROM egg WHERE status='incubating'")->fetchColumn();
+$completeBatches = $conn->query("SELECT COUNT(*) FROM egg WHERE status='complete'")->fetchColumn();
+
+// Recent Activity (Last 24 hours)
+$stmt = $conn->prepare("
+    SELECT COUNT(*) as count 
+    FROM user_activity_logs 
+    WHERE log_date >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+");
+$stmt->execute();
+$activity24h = $stmt->fetchColumn();
+
+// Top Performing Users (by chicks + balut)
+$stmt = $conn->prepare("
+    SELECT u.username, 
+           COUNT(DISTINCT e.egg_id) as batch_count,
+           SUM(e.total_egg) as total_eggs,
+           SUM(e.chick_count) + SUM(e.balut_count) as total_success,
+           SUM(e.failed_count) as total_failed,
+           ROUND((SUM(e.chick_count) + SUM(e.balut_count)) / NULLIF(SUM(e.total_egg), 0) * 100, 1) as success_rate
+    FROM users u
+    JOIN egg e ON u.user_id = e.user_id
+    WHERE u.user_role = 'user'
+    GROUP BY u.user_id
+    ORDER BY total_success DESC
+    LIMIT 5
+");
+$stmt->execute();
+$topPerformers = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Recent Batches
+$stmt = $conn->prepare("
+    SELECT e.*, u.username,
+           DATEDIFF(NOW(), e.date_started_incubation) as days_in_incubation
+    FROM egg e
+    JOIN users u ON e.user_id = u.user_id
+    ORDER BY e.date_started_incubation DESC
+    LIMIT 10
+");
+$stmt->execute();
+$recentBatches = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Recent Activity Logs
+$stmt = $conn->prepare("
+    SELECT l.*, u.username
+    FROM user_activity_logs l
+    LEFT JOIN users u ON l.user_id = u.user_id
+    WHERE l.log_date IS NOT NULL
+    ORDER BY l.log_date DESC
+    LIMIT 15
+");
+$stmt->execute();
+$activityLogs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Active Users Today
+$stmt = $conn->prepare("
+    SELECT COUNT(DISTINCT user_id) as active_users
+    FROM user_activity_logs
+    WHERE DATE(log_date) = CURDATE()
+");
+$stmt->execute();
+$activeToday = $stmt->fetchColumn();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ANALYTICS TAB - Advanced Statistics
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Daily Production Trend (Last 30 days)
+$dailyProduction = [];
+$dailyLabels = [];
+for ($i = 29; $i >= 0; $i--) {
+    $date = date('Y-m-d', strtotime("-$i days"));
+    $dailyLabels[] = date('M d', strtotime($date));
+
+    $stmt = $conn->prepare("
+        SELECT 
+            COALESCE(SUM(balut_count), 0) as balut,
+            COALESCE(SUM(chick_count), 0) as chicks,
+            COALESCE(SUM(failed_count), 0) as failed,
+            COALESCE(COUNT(*), 0) as batches
+        FROM egg
+        WHERE DATE(date_started_incubation) = ?
+    ");
+    $stmt->execute([$date]);
+    $result = $stmt->fetch(PDO::FETCH_ASSOC);
+    $dailyProduction[] = [
+        'balut' => (int)$result['balut'],
+        'chicks' => (int)$result['chicks'],
+        'failed' => (int)$result['failed'],
+        'batches' => (int)$result['batches']
+    ];
+}
+
+// Weekly Production Summary (Last 4 weeks) - Fixed version
+$weeklySummary = [];
+// Define the last 4 weeks
+for ($i = 3; $i >= 0; $i--) {
+    $weekStart = date('Y-m-d', strtotime("-$i weeks"));
+    $weekEnd = date('Y-m-d', strtotime("-$i weeks +6 days"));
+    $weekNumber = 4 - $i;
+
+    $stmt = $conn->prepare("
+        SELECT 
+            COUNT(DISTINCT egg_id) as batches,
+            COALESCE(SUM(total_egg), 0) as total_eggs,
+            COALESCE(SUM(balut_count), 0) as balut,
+            COALESCE(SUM(chick_count), 0) as chicks,
+            COALESCE(SUM(failed_count), 0) as failed
+        FROM egg
+        WHERE DATE(date_started_incubation) BETWEEN ? AND ?
+    ");
+    $stmt->execute([$weekStart, $weekEnd]);
+    $result = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    $weeklySummary[] = [
+        'week_label' => "Week $weekNumber",
+        'batches' => (int)$result['batches'],
+        'total_eggs' => (int)$result['total_eggs'],
+        'balut' => (int)$result['balut'],
+        'chicks' => (int)$result['chicks'],
+        'failed' => (int)$result['failed']
+    ];
+}
+
+// Hourly Activity Pattern
+$hourlyActivity = array_fill(0, 24, 0);
+$stmt = $conn->prepare("
+    SELECT HOUR(log_date) as hour, COUNT(*) as count
+    FROM user_activity_logs
+    WHERE log_date >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+    GROUP BY HOUR(log_date)
+");
+$stmt->execute();
+while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+    $hourlyActivity[(int)$row['hour']] = (int)$row['count'];
+}
+
+// Most Active Users (Last 30 days)
+$stmt = $conn->prepare("
+    SELECT u.username, u.user_role, COUNT(l.log_id) as action_count
+    FROM users u
+    LEFT JOIN user_activity_logs l ON u.user_id = l.user_id 
+        AND l.log_date >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+    GROUP BY u.user_id
+    ORDER BY action_count DESC
+    LIMIT 10
+");
+$stmt->execute();
+$mostActiveUsers = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Production by User Role
+$stmt = $conn->prepare("
+    SELECT 
+        u.user_role,
+        COUNT(DISTINCT e.egg_id) as total_batches,
+        COALESCE(SUM(e.total_egg), 0) as total_eggs,
+        COALESCE(SUM(e.balut_count), 0) as total_balut,
+        COALESCE(SUM(e.chick_count), 0) as total_chicks,
+        COALESCE(SUM(e.failed_count), 0) as total_failed
+    FROM users u
+    LEFT JOIN egg e ON u.user_id = e.user_id
+    GROUP BY u.user_role
+");
+$stmt->execute();
+$productionByRole = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Batch Efficiency Distribution
+$stmt = $conn->prepare("
+    SELECT 
+        CASE 
+            WHEN (balut_count + chick_count) / total_egg >= 0.9 THEN 'Excellent (90%+)'
+            WHEN (balut_count + chick_count) / total_egg >= 0.7 THEN 'Good (70-89%)'
+            WHEN (balut_count + chick_count) / total_egg >= 0.5 THEN 'Average (50-69%)'
+            ELSE 'Poor (<50%)'
+        END as efficiency_level,
+        COUNT(*) as batch_count,
+        ROUND(AVG((balut_count + chick_count) / total_egg * 100), 1) as avg_efficiency
+    FROM egg
+    WHERE total_egg > 0
+    GROUP BY efficiency_level
+    ORDER BY avg_efficiency DESC
+");
+$stmt->execute();
+$efficiencyDistribution = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// If no data in efficiency distribution, provide default values
+if (empty($efficiencyDistribution)) {
+    $efficiencyDistribution = [
+        ['efficiency_level' => 'Excellent (90%+)', 'batch_count' => 0, 'avg_efficiency' => 0],
+        ['efficiency_level' => 'Good (70-89%)', 'batch_count' => 0, 'avg_efficiency' => 0],
+        ['efficiency_level' => 'Average (50-69%)', 'batch_count' => 0, 'avg_efficiency' => 0],
+        ['efficiency_level' => 'Poor (<50%)', 'batch_count' => 0, 'avg_efficiency' => 0]
+    ];
+}
+
+// Failure Analysis by Day of Incubation
+$stmt = $conn->prepare("
+    SELECT day_number, ROUND(AVG(failed_count), 2) as avg_failures, COUNT(*) as log_count
+    FROM egg_daily_logs
+    GROUP BY day_number
+    ORDER BY day_number
+");
+$stmt->execute();
+$failureByDay = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// User Retention (Users who created batches in last 30 days vs total)
+$totalUsersWithBatches = $conn->query("SELECT COUNT(DISTINCT user_id) FROM egg")->fetchColumn();
+$activeUsersLast30 = $conn->prepare("
+    SELECT COUNT(DISTINCT user_id) 
+    FROM egg 
+    WHERE date_started_incubation >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+");
+$activeUsersLast30->execute();
+$activeUsersLast30Count = $activeUsersLast30->fetchColumn();
+$retentionRate = $totalUsersWithBatches > 0 ? round(($activeUsersLast30Count / $totalUsersWithBatches) * 100, 1) : 0;
+
+// Top Actions Summary
+$stmt = $conn->prepare("
+    SELECT action, COUNT(*) as count
+    FROM user_activity_logs
+    WHERE log_date >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+    GROUP BY action
+    ORDER BY count DESC
+    LIMIT 8
+");
+$stmt->execute();
+$topActions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Handle AJAX activity refresh
+if (isset($_GET['get_activity_ajax'])) {
+    $stmt = $conn->prepare("
+        SELECT l.log_date, u.username, l.action 
+        FROM user_activity_logs l 
+        LEFT JOIN users u ON l.user_id = u.user_id 
+        WHERE l.log_date IS NOT NULL 
+        ORDER BY l.log_date DESC 
+        LIMIT 15
+    ");
+    $stmt->execute();
+    $freshLogs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $logsData = [];
+    foreach ($freshLogs as $log) {
+        $logsData[] = [
+            'formatted_date' => formatDateTime($log['log_date']),
+            'time_ago' => timeAgo($log['log_date']),
+            'username' => $log['username'] ?? 'System',
+            'action' => $log['action']
+        ];
+    }
+    echo json_encode(['logs' => $logsData]);
+    exit;
+}
+
+// Handle activity log export
+if (isset($_GET['export_activity']) && $_GET['export_activity'] === 'csv') {
+    $stmt = $conn->prepare("
+        SELECT l.log_date, u.username, l.action
+        FROM user_activity_logs l
+        LEFT JOIN users u ON l.user_id = u.user_id
+        WHERE l.log_date IS NOT NULL
+        ORDER BY l.log_date DESC
+    ");
+    $stmt->execute();
+    $allLogs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="admin_activity_logs_' . date('Y-m-d') . '.csv"');
+
+    $output = fopen('php://output', 'w');
+    fprintf($output, chr(0xEF) . chr(0xBB) . chr(0xBF));
+    fputcsv($output, ['Date & Time', 'User', 'Action']);
+    foreach ($allLogs as $log) {
+        fputcsv($output, [formatDateTime($log['log_date']), $log['username'] ?? 'System', $log['action']]);
+    }
+    fclose($output);
+    exit;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REPORTS TAB - Report Generation
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Get report parameters
 $reportType = isset($_GET['report']) ? $_GET['report'] : 'userSummary';
 $startDate = isset($_GET['start']) ? $_GET['start'] : date('Y-m-01');
 $endDate = isset($_GET['end']) ? $_GET['end'] : date('Y-m-d');
 $reportData = [];
 $reportColumns = [];
+$reportTitle = '';
 
 // Handle CSV Export
 if (isset($_GET['export_csv']) && isset($_GET['report_type'])) {
@@ -65,7 +382,7 @@ if (isset($_GET['export_csv']) && isset($_GET['report_type'])) {
     switch ($exportType) {
         case 'userSummary':
             $stmt = $conn->prepare("
-                SELECT u.user_id, u.username, u.user_role, DATE(u.created_at) as created_date,
+                SELECT u.username, u.user_role, DATE(u.created_at) as created_date,
                        COALESCE(COUNT(DISTINCT e.egg_id), 0) as total_batches,
                        COALESCE(SUM(e.balut_count), 0) as total_balut,
                        COALESCE(SUM(e.chick_count), 0) as total_chicks,
@@ -77,7 +394,7 @@ if (isset($_GET['export_csv']) && isset($_GET['report_type'])) {
             ");
             $stmt->execute([$exportStart, $exportEnd]);
             $exportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            $exportHeaders = ['User ID', 'Username', 'Role', 'Created Date', 'Total Batches', 'Total Balut', 'Total Chicks', 'Total Failed'];
+            $exportHeaders = ['Username', 'Role', 'Created Date', 'Total Batches', 'Total Balut', 'Total Chicks', 'Total Failed'];
             $filename = "user_summary_{$exportStart}_to_{$exportEnd}.csv";
             break;
 
@@ -114,15 +431,18 @@ if (isset($_GET['export_csv']) && isset($_GET['report_type'])) {
         case 'managerPerformance':
             $stmt = $conn->prepare("
                 SELECT u.username, DATE(u.created_at) as created_date,
-                       (SELECT COUNT(*) FROM users WHERE user_role = 'user' AND created_by = u.user_id) as managed_users,
-                       (SELECT COUNT(*) FROM user_activity_logs WHERE user_id = u.user_id AND log_date BETWEEN ? AND ?) as recent_actions
+                       COUNT(DISTINCT al.log_id) as action_count,
+                       COUNT(DISTINCT DATE(al.log_date)) as active_days
                 FROM users u
+                LEFT JOIN user_activity_logs al ON u.user_id = al.user_id 
+                    AND DATE(al.log_date) BETWEEN ? AND ?
                 WHERE u.user_role = 'manager'
-                ORDER BY u.created_at DESC
+                GROUP BY u.user_id
+                ORDER BY action_count DESC
             ");
             $stmt->execute([$exportStart, $exportEnd]);
             $exportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            $exportHeaders = ['Manager Name', 'Created Date', 'Managed Users', 'Recent Actions'];
+            $exportHeaders = ['Manager Name', 'Created Date', 'Actions Performed', 'Active Days'];
             $filename = "manager_performance_{$exportStart}_to_{$exportEnd}.csv";
             break;
 
@@ -160,11 +480,11 @@ if (isset($_GET['export_csv']) && isset($_GET['report_type'])) {
             $stmt = $conn->prepare("
                 SELECT DATE_FORMAT(e.date_started_incubation, '%Y-%m') as month,
                        COUNT(DISTINCT e.egg_id) as total_batches,
-                       SUM(e.total_egg) as total_eggs,
-                       SUM(e.balut_count) as total_balut,
-                       SUM(e.chick_count) as total_chicks,
-                       SUM(e.failed_count) as total_failed,
-                       ROUND((SUM(e.balut_count) + SUM(e.chick_count)) / NULLIF(SUM(e.total_egg), 0) * 100, 2) as success_rate
+                       COALESCE(SUM(e.total_egg), 0) as total_eggs,
+                       COALESCE(SUM(e.balut_count), 0) as total_balut,
+                       COALESCE(SUM(e.chick_count), 0) as total_chicks,
+                       COALESCE(SUM(e.failed_count), 0) as total_failed,
+                       ROUND((COALESCE(SUM(e.balut_count), 0) + COALESCE(SUM(e.chick_count), 0)) / NULLIF(COALESCE(SUM(e.total_egg), 0), 0) * 100, 2) as success_rate
                 FROM egg e
                 WHERE DATE(e.date_started_incubation) BETWEEN ? AND ?
                 GROUP BY DATE_FORMAT(e.date_started_incubation, '%Y-%m')
@@ -178,13 +498,14 @@ if (isset($_GET['export_csv']) && isset($_GET['report_type'])) {
 
         case 'roleDistribution':
             $stmt = $conn->prepare("
-                SELECT user_role as role, COUNT(*) as count
+                SELECT user_role as role, COUNT(*) as count,
+                       ROUND(COUNT(*) / (SELECT COUNT(*) FROM users) * 100, 1) as percentage
                 FROM users
                 GROUP BY user_role
             ");
             $stmt->execute();
             $exportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            $exportHeaders = ['Role', 'Count'];
+            $exportHeaders = ['Role', 'Count', 'Percentage (%)'];
             $filename = "role_distribution.csv";
             break;
     }
@@ -244,6 +565,7 @@ switch ($reportType) {
             JOIN users u ON e.user_id = u.user_id
             WHERE DATE(d.created_at) BETWEEN ? AND ?
             ORDER BY d.created_at DESC
+            LIMIT 1000
         ");
         $stmt->execute([$startDate, $endDate]);
         $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -252,21 +574,17 @@ switch ($reportType) {
         break;
 
     case 'managerPerformance':
-        // Fixed: Removed non-existent 'created_by' column
-        // Shows manager activity and system oversight
         $stmt = $conn->prepare("
-            SELECT 
-                u.username,
-                DATE(u.created_at) as created_date,
-                COUNT(DISTINCT al.log_id) as total_actions,
-                COUNT(DISTINCT DATE(al.log_date)) as active_days,
-                MAX(DATE(al.log_date)) as last_active
+            SELECT u.username, DATE(u.created_at) as created_date,
+                   COUNT(DISTINCT al.log_id) as action_count,
+                   COUNT(DISTINCT DATE(al.log_date)) as active_days,
+                   MAX(DATE(al.log_date)) as last_active
             FROM users u
             LEFT JOIN user_activity_logs al ON u.user_id = al.user_id 
                 AND DATE(al.log_date) BETWEEN ? AND ?
             WHERE u.user_role = 'manager'
             GROUP BY u.user_id
-            ORDER BY total_actions DESC
+            ORDER BY action_count DESC
         ");
         $stmt->execute([$startDate, $endDate]);
         $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -281,7 +599,7 @@ switch ($reportType) {
             JOIN users u ON l.user_id = u.user_id
             WHERE DATE(l.log_date) BETWEEN ? AND ?
             ORDER BY l.log_date DESC
-            LIMIT 5000
+            LIMIT 2000
         ");
         $stmt->execute([$startDate, $endDate]);
         $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -309,11 +627,11 @@ switch ($reportType) {
         $stmt = $conn->prepare("
             SELECT DATE_FORMAT(e.date_started_incubation, '%Y-%m') as month,
                    COUNT(DISTINCT e.egg_id) as total_batches,
-                   SUM(e.total_egg) as total_eggs,
-                   SUM(e.balut_count) as total_balut,
-                   SUM(e.chick_count) as total_chicks,
-                   SUM(e.failed_count) as total_failed,
-                   ROUND((SUM(e.balut_count) + SUM(e.chick_count)) / NULLIF(SUM(e.total_egg), 0) * 100, 2) as success_rate
+                   COALESCE(SUM(e.total_egg), 0) as total_eggs,
+                   COALESCE(SUM(e.balut_count), 0) as total_balut,
+                   COALESCE(SUM(e.chick_count), 0) as total_chicks,
+                   COALESCE(SUM(e.failed_count), 0) as total_failed,
+                   ROUND((COALESCE(SUM(e.balut_count), 0) + COALESCE(SUM(e.chick_count), 0)) / NULLIF(COALESCE(SUM(e.total_egg), 0), 0) * 100, 2) as success_rate
             FROM egg e
             WHERE DATE(e.date_started_incubation) BETWEEN ? AND ?
             GROUP BY DATE_FORMAT(e.date_started_incubation, '%Y-%m')
@@ -327,117 +645,30 @@ switch ($reportType) {
 
     case 'roleDistribution':
         $stmt = $conn->prepare("
-            SELECT user_role as role, COUNT(*) as count
+            SELECT user_role as role, COUNT(*) as count,
+                   ROUND(COUNT(*) / (SELECT COUNT(*) FROM users) * 100, 1) as percentage
             FROM users
             GROUP BY user_role
         ");
         $stmt->execute();
         $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        $reportColumns = ['Role', 'Count'];
+        $reportColumns = ['Role', 'Count', 'Percentage (%)'];
         $reportTitle = 'Role Distribution Report';
         break;
 }
 
-// ── STATISTICS for Overview ─────────────────────────────────────────────────
-$totalUsers = $conn->query("SELECT COUNT(*) FROM users")->fetchColumn();
-$totalAdmins = $conn->query("SELECT COUNT(*) FROM users WHERE user_role='admin'")->fetchColumn();
-$totalManagers = $conn->query("SELECT COUNT(*) FROM users WHERE user_role='manager'")->fetchColumn();
-$totalRegularUsers = $conn->query("SELECT COUNT(*) FROM users WHERE user_role='user'")->fetchColumn();
-$totalBatches = $conn->query("SELECT COUNT(*) FROM egg")->fetchColumn();
-$totalEggs = $conn->query("SELECT SUM(total_egg) FROM egg")->fetchColumn() ?: 0;
-$totalChicks = $conn->query("SELECT SUM(chick_count) FROM egg")->fetchColumn() ?: 0;
-$totalBalut = $conn->query("SELECT SUM(balut_count) FROM egg")->fetchColumn() ?: 0;
-$totalFailed = $conn->query("SELECT SUM(failed_count) FROM egg")->fetchColumn() ?: 0;
-$successRate = $totalEggs > 0 ? round((($totalChicks + $totalBalut) / $totalEggs) * 100, 1) : 0;
-
-// Recent batches
-$stmt = $conn->prepare("
-    SELECT e.*, u.username,
-           DATEDIFF(NOW(), e.date_started_incubation) as days_in_incubation
-    FROM egg e
-    JOIN users u ON e.user_id = u.user_id
-    ORDER BY e.date_started_incubation DESC
-    LIMIT 5
-");
-$stmt->execute();
-$recentBatches = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-// Activity logs
-$stmt = $conn->prepare("
-    SELECT l.*, u.username
-    FROM user_activity_logs l
-    LEFT JOIN users u ON l.user_id = u.user_id
-    WHERE l.log_date IS NOT NULL
-    ORDER BY l.log_date DESC
-    LIMIT 10
-");
-$stmt->execute();
-$activityLogs = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-// Analytics data
-$dates = [];
-$activityTrend = [];
-for ($i = 13; $i >= 0; $i--) {
-    $dates[] = date('Y-m-d', strtotime("-$i days"));
-}
-
-$stmt = $conn->prepare("
-    SELECT DATE(log_date) as date, COUNT(*) as count
-    FROM user_activity_logs
-    WHERE log_date >= DATE_SUB(CURDATE(), INTERVAL 13 DAY)
-    GROUP BY DATE(log_date)
-");
-$stmt->execute();
-$dailyStats = [];
-while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-    $dailyStats[$row['date']] = (int)$row['count'];
-}
-foreach ($dates as $date) {
-    $activityTrend[] = isset($dailyStats[$date]) ? $dailyStats[$date] : 0;
-}
-
-$hourlyActivity = array_fill(0, 24, 0);
-$stmt = $conn->prepare("
-    SELECT HOUR(log_date) as hour, COUNT(*) as count
-    FROM user_activity_logs
-    WHERE log_date >= DATE_SUB(NOW(), INTERVAL 7 DAY)
-    GROUP BY HOUR(log_date)
-");
-$stmt->execute();
-while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-    $hourlyActivity[(int)$row['hour']] = (int)$row['count'];
-}
-
-$incubatingBatches = $conn->query("SELECT COUNT(*) FROM egg WHERE status='incubating'")->fetchColumn();
-$completeBatches = $conn->query("SELECT COUNT(*) FROM egg WHERE status='complete'")->fetchColumn();
-
-$formattedDates = array_map(function ($date) {
-    return date('M d', strtotime($date));
-}, $dates);
-
-// Handle AJAX activity refresh
-if (isset($_GET['get_activity_ajax'])) {
-    $stmt = $conn->prepare("
-        SELECT l.log_date, u.username, l.action 
-        FROM user_activity_logs l 
-        LEFT JOIN users u ON l.user_id = u.user_id 
-        WHERE l.log_date IS NOT NULL 
-        ORDER BY l.log_date DESC 
-        LIMIT 10
-    ");
-    $stmt->execute();
-    $freshLogs = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    $logsData = [];
-    foreach ($freshLogs as $log) {
-        $logsData[] = [
-            'formatted_date' => formatDateTime($log['log_date']),
-            'time_ago' => timeAgo($log['log_date']),
-            'username' => $log['username'] ?? 'System',
-            'action' => $log['action']
-        ];
-    }
-    echo json_encode(['logs' => $logsData]);
-    exit;
+// Calculate summary statistics for reports
+$totalRecords = count($reportData);
+$summaryStats = [];
+if ($reportType == 'userSummary' && $totalRecords > 0) {
+    $summaryStats['total_balut'] = array_sum(array_column($reportData, 'total_balut'));
+    $summaryStats['total_chicks'] = array_sum(array_column($reportData, 'total_chicks'));
+    $summaryStats['total_failed'] = array_sum(array_column($reportData, 'total_failed'));
+    $summaryStats['total_batches'] = array_sum(array_column($reportData, 'total_batches'));
+} elseif ($reportType == 'monthlySummary' && $totalRecords > 0) {
+    $avgSuccess = array_sum(array_column($reportData, 'success_rate')) / $totalRecords;
+    $summaryStats['avg_success_rate'] = round($avgSuccess, 1);
+    $summaryStats['total_months'] = $totalRecords;
 }
 ?>
 
@@ -553,6 +784,7 @@ if (isset($_GET['get_activity_ajax'])) {
             z-index: 999;
         }
 
+        /* Main Content */
         .main-content {
             flex: 1;
             margin-left: 240px;
@@ -593,6 +825,7 @@ if (isset($_GET['get_activity_ajax'])) {
             box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
         }
 
+        /* Tabs */
         .tab-section {
             display: none;
         }
@@ -614,9 +847,10 @@ if (isset($_GET['get_activity_ajax'])) {
             }
         }
 
+        /* Stats Grid */
         .stats-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
             gap: 0.75rem;
             margin-bottom: 1rem;
         }
@@ -624,7 +858,7 @@ if (isset($_GET['get_activity_ajax'])) {
         .stat-card {
             background: white;
             border-radius: 12px;
-            padding: 0.75rem;
+            padding: 0.85rem;
             box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
             transition: all 0.2s;
             display: flex;
@@ -633,8 +867,8 @@ if (isset($_GET['get_activity_ajax'])) {
         }
 
         .stat-card:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
         }
 
         .stat-info h3 {
@@ -646,19 +880,25 @@ if (isset($_GET['get_activity_ajax'])) {
         }
 
         .stat-info p {
-            font-size: 1.2rem;
+            font-size: 1.3rem;
             font-weight: 700;
             color: #0f172a;
         }
 
+        .stat-info .trend {
+            font-size: 0.65rem;
+            margin-top: 0.2rem;
+            color: #10b981;
+        }
+
         .stat-icon {
-            width: 32px;
-            height: 32px;
-            border-radius: 10px;
+            width: 40px;
+            height: 40px;
+            border-radius: 12px;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 1rem;
+            font-size: 1.1rem;
         }
 
         .stat-card:nth-child(1) .stat-icon {
@@ -691,69 +931,51 @@ if (isset($_GET['get_activity_ajax'])) {
             color: #ef4444;
         }
 
+        /* Chart Rows */
         .chart-row {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-            gap: 0.75rem;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 1rem;
             margin-bottom: 1rem;
         }
 
         .chart-card {
             background: white;
             border-radius: 12px;
-            padding: 0.85rem;
+            padding: 1rem;
             box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
         }
 
         .chart-card h3 {
-            font-size: 0.8rem;
+            font-size: 0.85rem;
             font-weight: 600;
-            margin-bottom: 0.65rem;
+            margin-bottom: 0.75rem;
             color: #1e293b;
             display: flex;
             align-items: center;
-            gap: 0.4rem;
+            gap: 0.5rem;
         }
 
         .chart-card canvas {
-            max-height: 220px;
+            max-height: 250px;
             width: 100% !important;
         }
 
+        /* Tables */
         .table-container {
             background: white;
             border-radius: 12px;
-            padding: 0.85rem;
+            padding: 1rem;
             margin-bottom: 1rem;
             box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-            width: 100%;
             overflow-x: auto;
-        }
-
-        .table-scroll-wrapper {
-            width: 100%;
-            overflow-x: auto;
-            overflow-y: visible;
-            -webkit-overflow-scrolling: touch;
-            scrollbar-width: thin;
-        }
-
-        .table-scroll-wrapper::-webkit-scrollbar {
-            height: 6px;
-        }
-
-        .activity-scroll-wrapper {
-            max-height: 400px;
-            overflow-y: auto;
-            overflow-x: auto;
-            scrollbar-width: thin;
         }
 
         .table-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 0.85rem;
+            margin-bottom: 1rem;
             flex-wrap: wrap;
             gap: 0.6rem;
         }
@@ -764,7 +986,7 @@ if (isset($_GET['get_activity_ajax'])) {
             color: #1e293b;
             display: flex;
             align-items: center;
-            gap: 0.4rem;
+            gap: 0.5rem;
         }
 
         .data-table {
@@ -776,7 +998,7 @@ if (isset($_GET['get_activity_ajax'])) {
 
         .data-table th {
             text-align: left;
-            padding: 0.6rem 0.5rem;
+            padding: 0.7rem 0.5rem;
             font-size: 0.7rem;
             font-weight: 600;
             color: #64748b;
@@ -785,84 +1007,16 @@ if (isset($_GET['get_activity_ajax'])) {
         }
 
         .data-table td {
-            padding: 0.5rem 0.5rem;
+            padding: 0.6rem 0.5rem;
             border-bottom: 1px solid #f1f5f9;
         }
 
-        /* Report Controls */
-        .report-controls {
-            background: white;
-            border-radius: 12px;
-            padding: 1rem;
-            margin-bottom: 1rem;
-            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.75rem;
-            align-items: flex-end;
+        .activity-scroll-wrapper {
+            max-height: 400px;
+            overflow-y: auto;
         }
 
-        .report-controls .form-group {
-            flex: 1;
-            min-width: 140px;
-        }
-
-        .report-controls label {
-            font-size: 0.7rem;
-            font-weight: 600;
-            color: #64748b;
-            display: block;
-            margin-bottom: 0.3rem;
-        }
-
-        .report-controls select,
-        .report-controls input[type="date"] {
-            width: 100%;
-            padding: 0.5rem 0.7rem;
-            border: 1px solid #e2e8f0;
-            border-radius: 8px;
-            font-size: 0.75rem;
-            color: #334155;
-            background: white;
-        }
-
-        .btn {
-            padding: 0.5rem 1rem;
-            font-size: 0.75rem;
-            border-radius: 8px;
-            border: none;
-            cursor: pointer;
-            font-weight: 500;
-            transition: all 0.2s;
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-
-        .btn-primary {
-            background: #10b981;
-            color: white;
-        }
-
-        .btn-primary:hover {
-            background: #059669;
-        }
-
-        .btn-success {
-            background: #059669;
-            color: white;
-        }
-
-        .btn-outline {
-            background: white;
-            border: 1px solid #e2e8f0;
-            color: #334155;
-        }
-
-        .btn-outline:hover {
-            background: #f1f5f9;
-        }
-
+        /* Badges */
         .role-badge {
             display: inline-block;
             padding: 0.2rem 0.55rem;
@@ -913,6 +1067,26 @@ if (isset($_GET['get_activity_ajax'])) {
             color: #991b1b;
         }
 
+        .badge-excellent {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .badge-good {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+
+        .badge-average {
+            background: #fed7aa;
+            color: #92400e;
+        }
+
+        .badge-poor {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
         .user-info {
             display: flex;
             align-items: center;
@@ -936,6 +1110,38 @@ if (isset($_GET['get_activity_ajax'])) {
             font-size: 0.7rem;
             color: #64748b;
             white-space: nowrap;
+        }
+
+        .btn {
+            padding: 0.45rem 0.9rem;
+            font-size: 0.75rem;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .btn-primary {
+            background: #10b981;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #059669;
+        }
+
+        .btn-outline {
+            background: white;
+            border: 1px solid #e2e8f0;
+            color: #334155;
+        }
+
+        .btn-outline:hover {
+            background: #f1f5f9;
         }
 
         .toast {
@@ -966,6 +1172,43 @@ if (isset($_GET['get_activity_ajax'])) {
             background: #ef4444;
         }
 
+        /* Report Controls */
+        .report-controls {
+            background: white;
+            border-radius: 12px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            align-items: flex-end;
+        }
+
+        .report-controls .form-group {
+            flex: 1;
+            min-width: 140px;
+        }
+
+        .report-controls label {
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: #64748b;
+            display: block;
+            margin-bottom: 0.3rem;
+        }
+
+        .report-controls select,
+        .report-controls input[type="date"] {
+            width: 100%;
+            padding: 0.5rem 0.7rem;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 0.75rem;
+            color: #334155;
+            background: white;
+        }
+
         /* Print Styles */
         @media print {
 
@@ -976,10 +1219,11 @@ if (isset($_GET['get_activity_ajax'])) {
             .stats-grid,
             .chart-row,
             .report-controls .btn,
-            .table-container:not(#print-area),
-            #print-area .table-header .btn,
+            .table-header .btn,
             .date-badge,
-            .tab-section:not(.active) {
+            .btn-outline,
+            .btn-primary,
+            #reports-section .report-controls {
                 display: none !important;
             }
 
@@ -995,41 +1239,13 @@ if (isset($_GET['get_activity_ajax'])) {
                 padding: 0.5in;
             }
 
-            #print-area .table-container {
-                box-shadow: none;
-                padding: 0;
-                margin: 0;
-            }
-
-            #print-area .data-table {
-                font-size: 10pt;
-                border-collapse: collapse;
-                width: 100%;
-            }
-
-            #print-area .data-table th,
-            #print-area .data-table td {
+            .data-table th,
+            .data-table td {
                 border: 1px solid #ddd;
-                padding: 8px;
             }
 
-            #print-area .data-table th {
+            .data-table th {
                 background-color: #f2f2f2;
-            }
-
-            .report-header {
-                text-align: center;
-                margin-bottom: 20px;
-            }
-
-            .report-header h2 {
-                font-size: 18pt;
-                margin-bottom: 5px;
-            }
-
-            .report-header p {
-                font-size: 10pt;
-                color: #666;
             }
         }
 
@@ -1053,40 +1269,19 @@ if (isset($_GET['get_activity_ajax'])) {
                 width: 100%;
             }
 
-            .stats-grid {
-                grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-            }
-
             .chart-row {
                 grid-template-columns: 1fr;
             }
 
-            .report-controls {
-                flex-direction: column;
-                align-items: stretch;
-            }
-
-            .report-controls .form-group {
-                min-width: auto;
-            }
-
-            .btn {
-                width: 100%;
-                justify-content: center;
-            }
-
-            .table-header {
-                flex-direction: column;
-                align-items: flex-start;
+            .stats-grid {
+                grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
             }
         }
     </style>
 </head>
 
 <body>
-    <button class="mobile-menu-btn" id="mobileMenuBtn">
-        <i class="fas fa-bars"></i>
-    </button>
+    <button class="mobile-menu-btn" id="mobileMenuBtn"><i class="fas fa-bars"></i></button>
     <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeMobileMenu()"></div>
 
     <div class="dashboard">
@@ -1108,9 +1303,7 @@ if (isset($_GET['get_activity_ajax'])) {
                 <li class="<?= $activeTab == 'reports' ? 'active' : '' ?>" data-tab="reports">
                     <a onclick="switchTab('reports')"><i class="fas fa-file-alt"></i> Reports</a>
                 </li>
-                <li>
-                    <a href="../../controller/auth/signout.php"><i class="fas fa-sign-out-alt"></i> Logout</a>
-                </li>
+                <li><a href="../../controller/auth/signout.php"><i class="fas fa-sign-out-alt"></i> Logout</a></li>
             </ul>
         </aside>
 
@@ -1118,63 +1311,138 @@ if (isset($_GET['get_activity_ajax'])) {
             <div class="top-bar">
                 <div class="welcome-text">
                     <h1>Admin Dashboard</h1>
-                    <p id="page-subtitle"><?= $activeTab == 'overview' ? 'System overview & key metrics' : ($activeTab == 'analytics' ? 'System analytics & insights' : 'Generate, export & print reports') ?></p>
+                    <p id="page-subtitle"><?= $activeTab == 'overview' ? 'System overview & real-time metrics' : ($activeTab == 'analytics' ? 'Deep dive analytics & insights' : 'Generate & export reports') ?></p>
                 </div>
-                <div class="date-badge">
-                    <i class="far fa-calendar-alt"></i> <?= date('M d, Y') ?>
-                </div>
+                <div class="date-badge"><i class="far fa-calendar-alt"></i> <?= date('M d, Y') ?></div>
             </div>
 
-            <!-- ═══════════════ OVERVIEW TAB ═══════════════ -->
+            <!-- ═══════════════════════════════════════════════════════════════ -->
+            <!-- OVERVIEW TAB - Complete System Monitoring -->
+            <!-- ═══════════════════════════════════════════════════════════════ -->
             <div id="overview-section" class="tab-section <?= $activeTab == 'overview' ? 'active' : '' ?>">
+                <!-- Key Metrics Cards -->
                 <div class="stats-grid">
                     <div class="stat-card">
                         <div class="stat-info">
-                            <h3>Total Users</h3>
+                            <h3><i class="fas fa-users"></i> Total Users</h3>
                             <p><?= number_format($totalUsers) ?></p>
+                            <div class="trend"><i class="fas fa-chart-line"></i> <?= $totalAdmins ?> Admins | <?= $totalManagers ?> Managers | <?= $totalRegularUsers ?> Users</div>
                         </div>
                         <div class="stat-icon"><i class="fas fa-users"></i></div>
                     </div>
                     <div class="stat-card">
                         <div class="stat-info">
-                            <h3>Total Admins</h3>
-                            <p><?= number_format($totalAdmins) ?></p>
-                        </div>
-                        <div class="stat-icon"><i class="fas fa-user-shield"></i></div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-info">
-                            <h3>Total Managers</h3>
-                            <p><?= number_format($totalManagers) ?></p>
-                        </div>
-                        <div class="stat-icon"><i class="fas fa-user-tie"></i></div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-info">
-                            <h3>Regular Users</h3>
-                            <p><?= number_format($totalRegularUsers) ?></p>
-                        </div>
-                        <div class="stat-icon"><i class="fas fa-user"></i></div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-info">
-                            <h3>Total Batches</h3>
-                            <p><?= number_format($totalBatches) ?></p>
+                            <h3><i class="fas fa-egg"></i> Production Summary</h3>
+                            <p><?= number_format($totalBatches) ?> Batches</p>
+                            <div class="trend"><i class="fas fa-chart-simple"></i> <?= number_format($totalEggs) ?> Total Eggs</div>
                         </div>
                         <div class="stat-icon"><i class="fas fa-egg"></i></div>
                     </div>
                     <div class="stat-card">
                         <div class="stat-info">
-                            <h3>Success Rate</h3>
+                            <h3><i class="fas fa-chart-pie"></i> Success Rate</h3>
                             <p><?= $successRate ?>%</p>
+                            <div class="trend"><i class="fas fa-chart-line"></i> <?= number_format($totalSuccessful) ?> / <?= number_format($totalEggs) ?> eggs</div>
                         </div>
-                        <div class="stat-icon"><i class="fas fa-percentage"></i></div>
+                        <div class="stat-icon"><i class="fas fa-chart-pie"></i></div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-info">
+                            <h3><i class="fas fa-chart-line"></i> Active Users</h3>
+                            <p><?= $activeToday ?> Today</p>
+                            <div class="trend"><i class="fas fa-clock"></i> <?= $activity24h ?> actions (24h)</div>
+                        </div>
+                        <div class="stat-icon"><i class="fas fa-chart-line"></i></div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-info">
+                            <h3><i class="fas fa-dove"></i> Total Chicks</h3>
+                            <p><?= number_format($totalChicks) ?></p>
+                            <div class="trend"><i class="fas fa-drumstick-bite"></i> Balut: <?= number_format($totalBalut) ?></div>
+                        </div>
+                        <div class="stat-icon"><i class="fas fa-dove"></i></div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-info">
+                            <h3><i class="fas fa-times-circle"></i> Failed Eggs</h3>
+                            <p><?= number_format($totalFailed) ?></p>
+                            <div class="trend"><i class="fas fa-percentage"></i> <?= $failureRate ?>% failure rate</div>
+                        </div>
+                        <div class="stat-icon"><i class="fas fa-times-circle"></i></div>
                     </div>
                 </div>
 
+                <!-- User Growth Chart & Batch Status -->
+                <div class="chart-row">
+                    <div class="chart-card">
+                        <h3><i class="fas fa-chart-line" style="color:#10b981;"></i> User Growth (Last 7 Days)</h3>
+                        <canvas id="userGrowthChart"></canvas>
+                    </div>
+                    <div class="chart-card">
+                        <h3><i class="fas fa-chart-pie" style="color:#f59e0b;"></i> Batch Status Distribution</h3>
+                        <canvas id="batchStatusChart"></canvas>
+                        <div style="text-align:center; margin-top:0.5rem;">
+                            <span class="badge badge-warning">Incubating: <?= $incubatingBatches ?></span>
+                            <span class="badge badge-success">Complete: <?= $completeBatches ?></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Top Performing Users -->
                 <div class="table-container">
                     <div class="table-header">
-                        <h3><i class="fas fa-egg"></i> Recent Egg Batches</h3>
+                        <h3><i class="fas fa-trophy" style="color:#f59e0b;"></i> Top Performing Users</h3>
+                        <span class="badge badge-info"><i class="fas fa-chart-line"></i> By Success Rate</span>
+                    </div>
+                    <div class="table-scroll-wrapper">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>User</th>
+                                    <th>Batches</th>
+                                    <th>Total Eggs</th>
+                                    <th>Successful</th>
+                                    <th>Failed</th>
+                                    <th>Success Rate</th>
+                                    <th>Performance</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php if (empty($topPerformers)): ?>
+                                    <tr>
+                                        <td colspan="7" style="text-align:center">No production data available</td>
+                                    </tr>
+                                <?php else: ?>
+                                    <?php foreach ($topPerformers as $user): ?>
+                                        <tr>
+                                            <td>
+                                                <div class="user-info">
+                                                    <div class="avatar"><?= strtoupper(substr($user['username'], 0, 1)) ?></div><?= htmlspecialchars($user['username']) ?>
+                                                </div>
+                                            </td>
+                                            <td><?= $user['batch_count'] ?></td>
+                                            <td><?= number_format($user['total_eggs']) ?></td>
+                                            <td><strong><?= number_format($user['total_success']) ?></strong></td>
+                                            <td><?= number_format($user['total_failed']) ?></td>
+                                            <td><span class="badge <?= $user['success_rate'] >= 80 ? 'badge-success' : ($user['success_rate'] >= 60 ? 'badge-warning' : 'badge-danger') ?>"><?= $user['success_rate'] ?>%</span></td>
+                                            <td>
+                                                <div style="width:80px; background:#e2e8f0; border-radius:10px; overflow:hidden;">
+                                                    <div style="width:<?= $user['success_rate'] ?>%; height:6px; background:#10b981;"></div>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Recent Batches -->
+                <div class="table-container">
+                    <div class="table-header">
+                        <h3><i class="fas fa-clock"></i> Recent Batches</h3>
+                        <button class="btn btn-outline" onclick="window.location.href='?tab=reports&report=batchProduction'"><i class="fas fa-chart-bar"></i> View All</button>
                     </div>
                     <div class="table-scroll-wrapper">
                         <table class="data-table">
@@ -1185,6 +1453,7 @@ if (isset($_GET['get_activity_ajax'])) {
                                     <th>Total Eggs</th>
                                     <th>Chicks</th>
                                     <th>Balut</th>
+                                    <th>Failed</th>
                                     <th>Status</th>
                                     <th>Days</th>
                                 </tr>
@@ -1192,7 +1461,7 @@ if (isset($_GET['get_activity_ajax'])) {
                             <tbody>
                                 <?php if (empty($recentBatches)): ?>
                                     <tr>
-                                        <td colspan="7" style="text-align:center">No batches found</td>
+                                        <td colspan="8" style="text-align:center">No batches found</td>
                                     </tr>
                                 <?php else: ?>
                                     <?php foreach ($recentBatches as $batch): ?>
@@ -1200,8 +1469,9 @@ if (isset($_GET['get_activity_ajax'])) {
                                             <td><strong>#<?= htmlspecialchars($batch['batch_number'] ?? $batch['egg_id']) ?></strong></td>
                                             <td><?= htmlspecialchars($batch['username']) ?></td>
                                             <td><?= number_format($batch['total_egg']) ?></td>
-                                            <td><?= number_format($batch['chick_count']) ?></td>
-                                            <td><?= number_format($batch['balut_count']) ?></td>
+                                            <td><span class="badge badge-success"><?= number_format($batch['chick_count']) ?></span></td>
+                                            <td><span class="badge badge-info"><?= number_format($batch['balut_count']) ?></span></td>
+                                            <td><span class="badge badge-danger"><?= number_format($batch['failed_count']) ?></span></td>
                                             <td><span class="badge <?= $batch['status'] == 'incubating' ? 'badge-warning' : 'badge-success' ?>"><?= ucfirst($batch['status']) ?></span></td>
                                             <td><?= $batch['days_in_incubation'] ?? 0 ?> days</td>
                                         </tr>
@@ -1212,6 +1482,7 @@ if (isset($_GET['get_activity_ajax'])) {
                     </div>
                 </div>
 
+                <!-- Activity Logs -->
                 <div class="table-container">
                     <div class="table-header">
                         <h3><i class="fas fa-history"></i> Recent Activity</h3>
@@ -1246,54 +1517,174 @@ if (isset($_GET['get_activity_ajax'])) {
                 </div>
             </div>
 
-            <!-- ═══════════════ ANALYTICS TAB ═══════════════ -->
+            <!-- ═══════════════════════════════════════════════════════════════ -->
+            <!-- ANALYTICS TAB - Deep Dive Analytics -->
+            <!-- ═══════════════════════════════════════════════════════════════ -->
             <div id="analytics-section" class="tab-section <?= $activeTab == 'analytics' ? 'active' : '' ?>">
+                <!-- Production KPIs -->
                 <div class="stats-grid">
                     <div class="stat-card">
                         <div class="stat-info">
-                            <h3>Total Eggs</h3>
-                            <p><?= number_format($totalEggs) ?></p>
+                            <h3>Avg Success/Batch</h3>
+                            <p><?= $totalBatches > 0 ? round($totalSuccessful / $totalBatches) : 0 ?></p>
+                            <div class="trend">successful eggs per batch</div>
                         </div>
-                        <div class="stat-icon"><i class="fas fa-layer-group"></i></div>
+                        <div class="stat-icon"><i class="fas fa-chart-line"></i></div>
                     </div>
                     <div class="stat-card">
                         <div class="stat-info">
-                            <h3>Total Chicks</h3>
-                            <p><?= number_format($totalChicks) ?></p>
+                            <h3>Avg Batches/User</h3>
+                            <p><?= $totalUsersWithBatches > 0 ? round($totalBatches / $totalUsersWithBatches, 1) : 0 ?></p>
+                            <div class="trend">batches per active user</div>
                         </div>
-                        <div class="stat-icon"><i class="fas fa-hat-wizard"></i></div>
+                        <div class="stat-icon"><i class="fas fa-chart-simple"></i></div>
                     </div>
                     <div class="stat-card">
                         <div class="stat-info">
-                            <h3>Total Balut</h3>
-                            <p><?= number_format($totalBalut) ?></p>
+                            <h3>User Retention</h3>
+                            <p><?= $retentionRate ?>%</p>
+                            <div class="trend">active in last 30 days</div>
                         </div>
-                        <div class="stat-icon"><i class="fas fa-drumstick-bite"></i></div>
+                        <div class="stat-icon"><i class="fas fa-users"></i></div>
                     </div>
                     <div class="stat-card">
                         <div class="stat-info">
-                            <h3>Total Failed</h3>
-                            <p><?= number_format($totalFailed) ?></p>
+                            <h3>Peak Activity Hour</h3>
+                            <p><?= array_search(max($hourlyActivity), $hourlyActivity) ?>:00</p>
+                            <div class="trend">highest user engagement</div>
                         </div>
-                        <div class="stat-icon"><i class="fas fa-times-circle"></i></div>
+                        <div class="stat-icon"><i class="fas fa-clock"></i></div>
                     </div>
                 </div>
 
+                <!-- Daily Production Trend -->
+                <div class="chart-card" style="margin-bottom:1rem;">
+                    <h3><i class="fas fa-chart-line" style="color:#10b981;"></i> Daily Production Trend (Last 30 Days)</h3>
+                    <canvas id="dailyProductionChart"></canvas>
+                </div>
+
+                <!-- Weekly Summary & Efficiency Distribution -->
                 <div class="chart-row">
                     <div class="chart-card">
-                        <h3><i class="fas fa-chart-line" style="color:#10b981;"></i> Daily Activity Trend</h3><canvas id="dailyTrendChart"></canvas>
+                        <h3><i class="fas fa-chart-bar" style="color:#3b82f6;"></i> Weekly Production Summary</h3>
+                        <canvas id="weeklySummaryChart"></canvas>
                     </div>
                     <div class="chart-card">
-                        <h3><i class="fas fa-chart-bar" style="color:#3b82f6;"></i> Activity by Hour</h3><canvas id="hourlyChart"></canvas>
+                        <h3><i class="fas fa-chart-pie" style="color:#f59e0b;"></i> Batch Efficiency Distribution</h3>
+                        <canvas id="efficiencyChart"></canvas>
                     </div>
                 </div>
 
-                <div class="chart-row">
-                    <div class="chart-card">
-                        <h3><i class="fas fa-chart-pie" style="color:#f59e0b;"></i> Batch Status Distribution</h3><canvas id="batchStatusChart"></canvas>
+                <!-- Hourly Activity Pattern -->
+                <div class="chart-card" style="margin-bottom:1rem;">
+                    <h3><i class="fas fa-chart-bar" style="color:#8b5cf6;"></i> User Activity Pattern (Last 30 Days)</h3>
+                    <canvas id="hourlyActivityChart"></canvas>
+                </div>
+
+                <!-- Failure Analysis by Day -->
+                <div class="table-container">
+                    <div class="table-header">
+                        <h3><i class="fas fa-chart-line" style="color:#ef4444;"></i> Failure Analysis by Incubation Day</h3>
+                        <span class="badge badge-info"><i class="fas fa-chart-line"></i> Identifies critical days</span>
                     </div>
-                    <div class="chart-card">
-                        <h3><i class="fas fa-chart-pie" style="color:#8b5cf6;"></i> User Role Distribution</h3><canvas id="userRoleChart"></canvas>
+                    <div class="table-scroll-wrapper">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Incubation Day</th>
+                                    <th>Avg Failures per Batch</th>
+                                    <th>Logs Analyzed</th>
+                                    <th>Risk Level</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($failureByDay as $day): ?>
+                                    <tr>
+                                        <td><strong>Day <?= $day['day_number'] ?></strong></td>
+                                        <td><?= round($day['avg_failures'], 2) ?></td>
+                                        <td><?= $day['log_count'] ?></td>
+                                        <td>
+                                            <span class="badge <?= $day['avg_failures'] > 2 ? 'badge-danger' : ($day['avg_failures'] > 1 ? 'badge-warning' : 'badge-success') ?>">
+                                                <?= $day['avg_failures'] > 2 ? 'High Risk' : ($day['avg_failures'] > 1 ? 'Medium Risk' : 'Low Risk') ?>
+                                            </span>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Production by Role -->
+                <div class="table-container">
+                    <div class="table-header">
+                        <h3><i class="fas fa-chart-simple"></i> Production by User Role</h3>
+                    </div>
+                    <div class="table-scroll-wrapper">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Role</th>
+                                    <th>Batches</th>
+                                    <th>Total Eggs</th>
+                                    <th>Balut</th>
+                                    <th>Chicks</th>
+                                    <th>Failed</th>
+                                    <th>Success Rate</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($productionByRole as $role): ?>
+                                    <?php $roleSuccess = ($role['total_eggs'] > 0) ? round((($role['total_balut'] + $role['total_chicks']) / $role['total_eggs']) * 100, 1) : 0; ?>
+                                    <tr>
+                                        <td><span class="role-badge <?= $role['user_role'] ?>"><?= ucfirst($role['user_role']) ?></span></td>
+                                        <td><?= number_format($role['total_batches']) ?></td>
+                                        <td><?= number_format($role['total_eggs']) ?></td>
+                                        <td><?= number_format($role['total_balut']) ?></td>
+                                        <td><?= number_format($role['total_chicks']) ?></td>
+                                        <td><?= number_format($role['total_failed']) ?></td>
+                                        <td><span class="badge <?= $roleSuccess >= 70 ? 'badge-success' : 'badge-warning' ?>"><?= $roleSuccess ?>%</span></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Most Active Users -->
+                <div class="table-container">
+                    <div class="table-header">
+                        <h3><i class="fas fa-fire" style="color:#f59e0b;"></i> Most Active Users (Last 30 Days)</h3>
+                    </div>
+                    <div class="table-scroll-wrapper">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>User</th>
+                                    <th>Role</th>
+                                    <th>Actions Performed</th>
+                                    <th>Activity Level</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($mostActiveUsers as $user): ?>
+                                    <tr>
+                                        <td>
+                                            <div class="user-info">
+                                                <div class="avatar"><?= strtoupper(substr($user['username'], 0, 1)) ?></div><?= htmlspecialchars($user['username']) ?>
+                                            </div>
+                                        </td>
+                                        <td><span class="role-badge <?= $user['user_role'] ?>"><?= ucfirst($user['user_role']) ?></span></td>
+                                        <td><strong><?= number_format($user['action_count']) ?></strong></td>
+                                        <td>
+                                            <div style="width:100px; background:#e2e8f0; border-radius:10px; overflow:hidden;">
+                                                <div style="width:<?= min(100, ($user['action_count'] / max($mostActiveUsers[0]['action_count'] ?? 1, 1) * 100)) ?>%; height:6px; background:#f59e0b;"></div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>
@@ -1396,30 +1787,33 @@ if (isset($_GET['get_activity_ajax'])) {
     <div id="toast" class="toast"><i class="fas fa-check-circle"></i> <span id="toastMsg"></span></div>
 
     <script>
-        // Chart data
+        // Pass PHP data to JavaScript
         const chartData = {
-            dates: <?= json_encode($formattedDates) ?>,
-            activityTrend: <?= json_encode($activityTrend) ?>,
-            hourlyActivity: <?= json_encode(array_values($hourlyActivity)) ?>,
+            userGrowth: <?= json_encode($userGrowth) ?>,
+            growthLabels: <?= json_encode($growthLabels) ?>,
             incubating: <?= $incubatingBatches ?>,
             complete: <?= $completeBatches ?>,
-            adminCount: <?= $totalAdmins ?>,
-            managerCount: <?= $totalManagers ?>,
-            userCount: <?= $totalRegularUsers ?>
+            dailyProduction: <?= json_encode($dailyProduction) ?>,
+            dailyLabels: <?= json_encode($dailyLabels) ?>,
+            weeklySummary: <?= json_encode($weeklySummary) ?>,
+            hourlyActivity: <?= json_encode(array_values($hourlyActivity)) ?>,
+            efficiencyDistribution: <?= json_encode($efficiencyDistribution) ?>,
+            failureByDay: <?= json_encode($failureByDay) ?>
         };
 
-        let dailyChart, hourlyChart, batchStatusChart, userRoleChart;
+        let charts = {};
 
-        function initCharts() {
-            const dailyCtx = document.getElementById('dailyTrendChart')?.getContext('2d');
-            if (dailyCtx) {
-                dailyChart = new Chart(dailyCtx, {
+        function initOverviewCharts() {
+            // User Growth Chart
+            const ctx1 = document.getElementById('userGrowthChart')?.getContext('2d');
+            if (ctx1) {
+                charts.userGrowth = new Chart(ctx1, {
                     type: 'line',
                     data: {
-                        labels: chartData.dates,
+                        labels: chartData.growthLabels,
                         datasets: [{
-                            label: 'Activities',
-                            data: chartData.activityTrend,
+                            label: 'New Users',
+                            data: chartData.userGrowth,
                             borderColor: '#10b981',
                             backgroundColor: 'rgba(16, 185, 129, 0.1)',
                             borderWidth: 2,
@@ -1432,44 +1826,18 @@ if (isset($_GET['get_activity_ajax'])) {
                         maintainAspectRatio: true,
                         scales: {
                             y: {
-                                beginAtZero: true
+                                beginAtZero: true,
+                                stepSize: 1
                             }
                         }
                     }
                 });
             }
 
-            const hourlyCtx = document.getElementById('hourlyChart')?.getContext('2d');
-            if (hourlyCtx) {
-                const hourLabels = Array.from({
-                    length: 24
-                }, (_, i) => `${String(i).padStart(2, '0')}:00`);
-                hourlyChart = new Chart(hourlyCtx, {
-                    type: 'bar',
-                    data: {
-                        labels: hourLabels,
-                        datasets: [{
-                            label: 'Activities',
-                            data: chartData.hourlyActivity,
-                            backgroundColor: '#10b981',
-                            borderRadius: 4
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: true,
-                        scales: {
-                            y: {
-                                beginAtZero: true
-                            }
-                        }
-                    }
-                });
-            }
-
-            const batchCtx = document.getElementById('batchStatusChart')?.getContext('2d');
-            if (batchCtx) {
-                batchStatusChart = new Chart(batchCtx, {
+            // Batch Status Chart
+            const ctx2 = document.getElementById('batchStatusChart')?.getContext('2d');
+            if (ctx2) {
+                charts.batchStatus = new Chart(ctx2, {
                     type: 'doughnut',
                     data: {
                         labels: ['Incubating', 'Complete'],
@@ -1489,16 +1857,103 @@ if (isset($_GET['get_activity_ajax'])) {
                     }
                 });
             }
+        }
 
-            const roleCtx = document.getElementById('userRoleChart')?.getContext('2d');
-            if (roleCtx) {
-                userRoleChart = new Chart(roleCtx, {
+        function initAnalyticsCharts() {
+            // Daily Production Chart
+            const ctx1 = document.getElementById('dailyProductionChart')?.getContext('2d');
+            if (ctx1) {
+                charts.dailyProduction = new Chart(ctx1, {
+                    type: 'line',
+                    data: {
+                        labels: chartData.dailyLabels,
+                        datasets: [{
+                                label: 'Balut',
+                                data: chartData.dailyProduction.map(d => d.balut),
+                                borderColor: '#f59e0b',
+                                backgroundColor: 'transparent',
+                                borderWidth: 2,
+                                tension: 0.4
+                            },
+                            {
+                                label: 'Chicks',
+                                data: chartData.dailyProduction.map(d => d.chicks),
+                                borderColor: '#10b981',
+                                backgroundColor: 'transparent',
+                                borderWidth: 2,
+                                tension: 0.4
+                            },
+                            {
+                                label: 'Failed',
+                                data: chartData.dailyProduction.map(d => d.failed),
+                                borderColor: '#ef4444',
+                                backgroundColor: 'transparent',
+                                borderWidth: 2,
+                                tension: 0.4
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        scales: {
+                            y: {
+                                beginAtZero: true
+                            }
+                        }
+                    }
+                });
+            }
+
+            // Weekly Summary Chart
+            const ctx2 = document.getElementById('weeklySummaryChart')?.getContext('2d');
+            if (ctx2) {
+                charts.weeklySummary = new Chart(ctx2, {
+                    type: 'bar',
+                    data: {
+                        labels: chartData.weeklySummary.map(w => w.week_label),
+                        datasets: [{
+                                label: 'Balut',
+                                data: chartData.weeklySummary.map(w => w.balut),
+                                backgroundColor: '#f59e0b',
+                                borderRadius: 4
+                            },
+                            {
+                                label: 'Chicks',
+                                data: chartData.weeklySummary.map(w => w.chicks),
+                                backgroundColor: '#10b981',
+                                borderRadius: 4
+                            },
+                            {
+                                label: 'Failed',
+                                data: chartData.weeklySummary.map(w => w.failed),
+                                backgroundColor: '#ef4444',
+                                borderRadius: 4
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        scales: {
+                            y: {
+                                beginAtZero: true
+                            }
+                        }
+                    }
+                });
+            }
+
+            // Efficiency Distribution Chart
+            const ctx3 = document.getElementById('efficiencyChart')?.getContext('2d');
+            if (ctx3 && chartData.efficiencyDistribution.length > 0) {
+                charts.efficiency = new Chart(ctx3, {
                     type: 'pie',
                     data: {
-                        labels: ['Admin', 'Manager', 'User'],
+                        labels: chartData.efficiencyDistribution.map(e => e.efficiency_level),
                         datasets: [{
-                            data: [chartData.adminCount, chartData.managerCount, chartData.userCount],
-                            backgroundColor: ['#ef4444', '#f59e0b', '#10b981']
+                            data: chartData.efficiencyDistribution.map(e => e.batch_count),
+                            backgroundColor: ['#10b981', '#3b82f6', '#f59e0b', '#ef4444']
                         }]
                     },
                     options: {
@@ -1506,7 +1961,41 @@ if (isset($_GET['get_activity_ajax'])) {
                         maintainAspectRatio: true,
                         plugins: {
                             legend: {
-                                position: 'bottom'
+                                position: 'bottom',
+                                labels: {
+                                    font: {
+                                        size: 10
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            // Hourly Activity Chart
+            const ctx4 = document.getElementById('hourlyActivityChart')?.getContext('2d');
+            if (ctx4) {
+                const hourLabels = Array.from({
+                    length: 24
+                }, (_, i) => `${String(i).padStart(2, '0')}:00`);
+                charts.hourlyActivity = new Chart(ctx4, {
+                    type: 'bar',
+                    data: {
+                        labels: hourLabels,
+                        datasets: [{
+                            label: 'User Actions',
+                            data: chartData.hourlyActivity,
+                            backgroundColor: '#8b5cf6',
+                            borderRadius: 4
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        scales: {
+                            y: {
+                                beginAtZero: true
                             }
                         }
                     }
@@ -1526,79 +2015,26 @@ if (isset($_GET['get_activity_ajax'])) {
             document.getElementById(`${tabName}-section`).classList.add('active');
 
             const subtitles = {
-                overview: 'System overview & key metrics',
-                analytics: 'System analytics & insights',
-                reports: 'Generate, export & print reports'
+                overview: 'System overview & real-time metrics',
+                analytics: 'Deep dive analytics & insights',
+                reports: 'Generate & export reports'
             };
             document.getElementById('page-subtitle').textContent = subtitles[tabName];
 
-            if (tabName === 'analytics') {
-                setTimeout(() => {
-                    if (dailyChart) dailyChart.resize();
-                    if (hourlyChart) hourlyChart.resize();
-                    if (batchStatusChart) batchStatusChart.resize();
-                    if (userRoleChart) userRoleChart.resize();
-                }, 100);
-            }
+            // Re-initialize charts when switching tabs
+            setTimeout(() => {
+                if (tabName === 'overview') {
+                    if (charts.userGrowth) charts.userGrowth.resize();
+                    if (charts.batchStatus) charts.batchStatus.resize();
+                } else if (tabName === 'analytics') {
+                    if (charts.dailyProduction) charts.dailyProduction.resize();
+                    if (charts.weeklySummary) charts.weeklySummary.resize();
+                    if (charts.efficiency) charts.efficiency.resize();
+                    if (charts.hourlyActivity) charts.hourlyActivity.resize();
+                }
+            }, 100);
+
             if (window.innerWidth <= 768) closeMobileMenu();
-        }
-
-        function generateReport() {
-            const reportType = document.getElementById('reportType').value;
-            const startDate = document.getElementById('startDate').value;
-            const endDate = document.getElementById('endDate').value;
-            window.location.href = `?tab=reports&report=${reportType}&start=${startDate}&end=${endDate}`;
-        }
-
-        function exportReportCSV() {
-            const reportType = document.getElementById('reportType').value;
-            const startDate = document.getElementById('startDate').value;
-            const endDate = document.getElementById('endDate').value;
-            window.location.href = `?export_csv=1&report_type=${reportType}&start=${startDate}&end=${endDate}`;
-            showToast('Exporting report...', 'success');
-        }
-
-        function printReport() {
-            const reportTitle = document.getElementById('reportTitle')?.innerText || 'System Report';
-            const reportDateRange = document.getElementById('reportDateRange')?.innerText || '';
-
-            const printContent = document.getElementById('print-area').innerHTML;
-            const printWindow = window.open('', '_blank');
-            printWindow.document.write(`
-                <!DOCTYPE html>
-                <html>
-                <head>
-                    <title>${reportTitle}</title>
-                    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-                    <style>
-                        * { margin: 0; padding: 0; box-sizing: border-box; }
-                        body { font-family: 'Inter', sans-serif; padding: 0.5in; background: white; }
-                        .report-header { text-align: center; margin-bottom: 20px; }
-                        .report-header h2 { font-size: 18pt; margin-bottom: 5px; color: #0f172a; }
-                        .report-header p { font-size: 10pt; color: #64748b; }
-                        .data-table { width: 100%; font-size: 9pt; border-collapse: collapse; margin-top: 15px; }
-                        .data-table th { background: #f1f5f9; padding: 8px; text-align: left; border: 1px solid #e2e8f0; }
-                        .data-table td { padding: 6px 8px; border: 1px solid #e2e8f0; }
-                        .summary-box { margin-top: 20px; padding: 10px; background: #f0fdf4; border-radius: 8px; text-align: center; }
-                        @media print {
-                            body { padding: 0; }
-                            .no-print { display: none; }
-                        }
-                    </style>
-                </head>
-                <body>
-                    <div class="report-header">
-                        <h2>${reportTitle.replace(/<[^>]*>/g, '')}</h2>
-                        <p>Generated on: ${new Date().toLocaleString()} | ${reportDateRange}</p>
-                    </div>
-                    ${printContent}
-                </body>
-                </html>
-            `);
-            printWindow.document.close();
-            printWindow.print();
-            printWindow.onafterprint = () => printWindow.close();
-            showToast('Preparing print...', 'success');
         }
 
         function exportActivityCSV() {
@@ -1659,7 +2095,79 @@ if (isset($_GET['get_activity_ajax'])) {
             return div.innerHTML;
         }
 
-        document.addEventListener('DOMContentLoaded', initCharts);
+        // Initialize charts based on active tab
+        document.addEventListener('DOMContentLoaded', function() {
+            initOverviewCharts();
+            initAnalyticsCharts();
+
+            const activeTab = '<?= $activeTab ?>';
+            if (activeTab === 'analytics') {
+                setTimeout(() => {
+                    if (charts.dailyProduction) charts.dailyProduction.resize();
+                    if (charts.weeklySummary) charts.weeklySummary.resize();
+                    if (charts.efficiency) charts.efficiency.resize();
+                    if (charts.hourlyActivity) charts.hourlyActivity.resize();
+                }, 200);
+            }
+        });
+
+        // Report Functions
+        function generateReport() {
+            const reportType = document.getElementById('reportType').value;
+            const startDate = document.getElementById('startDate').value;
+            const endDate = document.getElementById('endDate').value;
+            window.location.href = `?tab=reports&report=${reportType}&start=${startDate}&end=${endDate}`;
+        }
+
+        function exportReportCSV() {
+            const reportType = document.getElementById('reportType').value;
+            const startDate = document.getElementById('startDate').value;
+            const endDate = document.getElementById('endDate').value;
+            window.location.href = `?export_csv=1&report_type=${reportType}&start=${startDate}&end=${endDate}`;
+            showToast('Exporting report...', 'success');
+        }
+
+        function printReport() {
+            const reportTitle = document.getElementById('reportTitle')?.innerText || 'System Report';
+            const reportDateRange = document.getElementById('reportDateRange')?.innerText || '';
+
+            const printContent = document.getElementById('print-area').innerHTML;
+            const printWindow = window.open('', '_blank');
+            printWindow.document.write(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>${reportTitle}</title>
+            <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+            <style>
+                * { margin: 0; padding: 0; box-sizing: border-box; }
+                body { font-family: 'Inter', sans-serif; padding: 0.5in; background: white; }
+                .report-header { text-align: center; margin-bottom: 20px; }
+                .report-header h2 { font-size: 18pt; margin-bottom: 5px; color: #0f172a; }
+                .report-header p { font-size: 10pt; color: #64748b; }
+                .data-table { width: 100%; font-size: 9pt; border-collapse: collapse; margin-top: 15px; }
+                .data-table th { background: #f1f5f9; padding: 8px; text-align: left; border: 1px solid #e2e8f0; }
+                .data-table td { padding: 6px 8px; border: 1px solid #e2e8f0; }
+                .summary-box { margin-top: 20px; padding: 10px; background: #f0fdf4; border-radius: 8px; text-align: center; }
+                @media print {
+                    body { padding: 0; }
+                }
+            </style>
+        </head>
+        <body>
+            <div class="report-header">
+                <h2>${escapeHtml(reportTitle.replace(/<[^>]*>/g, ''))}</h2>
+                <p>Generated on: ${new Date().toLocaleString()} | ${escapeHtml(reportDateRange)}</p>
+            </div>
+            ${printContent}
+        </body>
+        </html>
+    `);
+            printWindow.document.close();
+            printWindow.print();
+            printWindow.onafterprint = () => printWindow.close();
+            showToast('Preparing print...', 'success');
+        }
     </script>
 </body>
 
