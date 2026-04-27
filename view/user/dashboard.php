@@ -1,5 +1,4 @@
 <?php
-
 require '../../model/config.php';
 
 // Check if user is logged in and has user role
@@ -9,10 +8,35 @@ if (!isset($_SESSION['user_id']) || $_SESSION['user_role'] !== 'user') {
 }
 
 $user_id = $_SESSION['user_id'];
+$username = $_SESSION['user_name'] ?? 'User';
 
 // Check database connection
 if (!isset($conn) || $conn === null) {
     die("Database connection not established. Please check config.php");
+}
+
+// Helper: format date/time properly
+function formatDateTime($datetime)
+{
+    if (!$datetime) return 'Never';
+    $timestamp = strtotime($datetime);
+    return date('M j, Y g:i A', $timestamp);
+}
+
+// Helper: time ago
+function timeAgo($datetime)
+{
+    if (!$datetime) return 'Never';
+    $now = new DateTime();
+    $ago = new DateTime($datetime);
+    $diff = $now->diff($ago);
+
+    if ($diff->y > 0) return $diff->y . ' year' . ($diff->y > 1 ? 's' : '') . ' ago';
+    elseif ($diff->m > 0) return $diff->m . ' month' . ($diff->m > 1 ? 's' : '') . ' ago';
+    elseif ($diff->d > 0) return $diff->d . ' day' . ($diff->d > 1 ? 's' : '') . ' ago';
+    elseif ($diff->h > 0) return $diff->h . ' hour' . ($diff->h > 1 ? 's' : '') . ' ago';
+    elseif ($diff->i > 0) return $diff->i . ' minute' . ($diff->i > 1 ? 's' : '') . ' ago';
+    else return 'Just now';
 }
 
 // ── Incubation constants ─────────────────────────────────────────────────────
@@ -63,7 +87,6 @@ if (isset($_POST['add_batch'])) {
     header("Location: dashboard.php");
     exit;
 }
-
 
 // ── Delete Batch ─────────────────────────────────────────────────────────
 if (isset($_POST['delete_batch'])) {
@@ -211,7 +234,7 @@ try {
 
 // Fetch activity logs
 try {
-    $stmt = $conn->prepare("SELECT * FROM user_activity_logs WHERE user_id = ? ORDER BY log_date DESC LIMIT 15");
+    $stmt = $conn->prepare("SELECT * FROM user_activity_logs WHERE user_id = ? ORDER BY log_date DESC LIMIT 50");
     $stmt->execute([$user_id]);
     $logs = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
@@ -227,73 +250,1047 @@ foreach ($batches as $b) {
     $today_logged_map[$b['egg_id']] = (bool)$chk->fetch();
 }
 
-// Pass PHP variables to JavaScript
-$js_vars = [
-    'totalBalut' => (int)$stat_balut,
-    'totalChicks' => (int)$stat_chicks,
-    'totalFailed' => (int)$stat_failed,
-    'incubating' => (int)$stat_incubating,
-    'complete' => (int)$stat_complete,
-    'dailyAnalytics' => $daily_analytics,
-    'batchRemaining' => $batch_remaining,
-    'BALUT_UNLOCK' => BALUT_UNLOCK_DAY,
-    'CHICK_UNLOCK' => CHICK_UNLOCK_DAY,
-];
+// Active tab
+$activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'overview';
 ?>
 <!DOCTYPE html>
 <html lang="en">
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>My Dashboard | EggFlow</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>User Dashboard | EggFlow</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    <link rel="stylesheet" href="../../assets/user/js/css/user_style.css">
-    <link rel="stylesheet" href="../../assets/user/js/css/dashboard_responsive.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: #f1f5f9;
+            color: #1e293b;
+            font-size: 13px;
+            overflow-x: hidden;
+        }
+
+        /* Dashboard Layout */
+        .dashboard {
+            display: flex;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* Sidebar - Matching Admin/Manager Dashboard */
+        .sidebar {
+            width: 240px;
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+            color: white;
+            transition: all 0.3s ease;
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
+            z-index: 1000;
+        }
+
+        .sidebar-header {
+            padding: 1.2rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .sidebar-header h2 {
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+
+        .sidebar-header p {
+            font-size: 0.65rem;
+            opacity: 0.7;
+            margin-top: 0.25rem;
+        }
+
+        .sidebar-menu {
+            list-style: none;
+            padding: 0.75rem 0;
+        }
+
+        .sidebar-menu li {
+            margin: 0.15rem 0;
+        }
+
+        .sidebar-menu li a {
+            display: flex;
+            align-items: center;
+            gap: 0.7rem;
+            padding: 0.6rem 1.2rem;
+            color: rgba(255, 255, 255, 0.8);
+            text-decoration: none;
+            transition: all 0.2s;
+            font-size: 0.85rem;
+        }
+
+        .sidebar-menu li.active a,
+        .sidebar-menu a:hover {
+            background: rgba(16, 185, 129, 0.2);
+            color: #10b981;
+        }
+
+        /* Mobile menu button */
+        .mobile-menu-btn {
+            display: none;
+            position: fixed;
+            top: 0.75rem;
+            left: 0.75rem;
+            z-index: 1001;
+            background: #10b981;
+            color: white;
+            border: none;
+            padding: 0.5rem 0.7rem;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1rem;
+        }
+
+        .sidebar-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 999;
+        }
+
+        /* Main Content - Matching Admin/Manager Dashboard */
+        .main-content {
+            flex: 1;
+            margin-left: 240px;
+            padding: 1rem;
+            transition: margin-left 0.3s ease;
+            width: calc(100% - 240px);
+            overflow-x: auto;
+        }
+
+        /* Top Bar - Matching Admin/Manager Dashboard */
+        .top-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+        }
+
+        .welcome-text h1 {
+            font-size: 1.3rem;
+            font-weight: 600;
+            color: #0f172a;
+        }
+
+        .welcome-text p {
+            font-size: 0.75rem;
+            color: #64748b;
+            margin-top: 0.2rem;
+        }
+
+        .date-badge {
+            background: white;
+            padding: 0.4rem 0.9rem;
+            border-radius: 10px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            color: #1e293b;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+        }
+
+        /* Stats Grid - Matching Dashboard */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+
+        .stat-card {
+            background: white;
+            border-radius: 12px;
+            padding: 0.75rem;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+            transition: all 0.2s;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+        }
+
+        .stat-info h3 {
+            font-size: 0.65rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #64748b;
+            margin-bottom: 0.35rem;
+        }
+
+        .stat-info p {
+            font-size: 1.2rem;
+            font-weight: 700;
+            color: #0f172a;
+        }
+
+        .stat-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1rem;
+        }
+
+        .stat-card:nth-child(1) .stat-icon {
+            background: rgba(16, 185, 129, 0.12);
+            color: #10b981;
+        }
+
+        .stat-card:nth-child(2) .stat-icon {
+            background: rgba(59, 130, 246, 0.12);
+            color: #3b82f6;
+        }
+
+        .stat-card:nth-child(3) .stat-icon {
+            background: rgba(245, 158, 11, 0.12);
+            color: #f59e0b;
+        }
+
+        .stat-card:nth-child(4) .stat-icon {
+            background: rgba(139, 92, 246, 0.12);
+            color: #8b5cf6;
+        }
+
+        /* Action Bar */
+        .action-bar {
+            background: white;
+            border-radius: 12px;
+            padding: 0.75rem;
+            margin-bottom: 1rem;
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+        }
+
+        .action-bar-left {
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        /* Table Container - Matching Dashboard */
+        .table-container {
+            background: white;
+            border-radius: 12px;
+            padding: 0.85rem;
+            margin-bottom: 1rem;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+            width: 100%;
+            overflow-x: auto;
+        }
+
+        .table-scroll-wrapper {
+            width: 100%;
+            overflow-x: auto;
+            overflow-y: visible;
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: thin;
+            scrollbar-color: #cbd5e1 #f1f5f9;
+        }
+
+        .table-scroll-wrapper::-webkit-scrollbar {
+            height: 6px;
+            width: 6px;
+        }
+
+        .table-scroll-wrapper::-webkit-scrollbar-track {
+            background: #f1f5f9;
+            border-radius: 10px;
+        }
+
+        .table-scroll-wrapper::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 10px;
+        }
+
+        .table-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.85rem;
+            flex-wrap: wrap;
+            gap: 0.6rem;
+        }
+
+        .table-header h3 {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: #1e293b;
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .data-table {
+            width: 100%;
+            font-size: 0.75rem;
+            border-collapse: collapse;
+            min-width: 500px;
+        }
+
+        .data-table th {
+            text-align: left;
+            padding: 0.6rem 0.5rem;
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: #64748b;
+            border-bottom: 2px solid #e2e8f0;
+            background: white;
+        }
+
+        .data-table td {
+            padding: 0.5rem 0.5rem;
+            border-bottom: 1px solid #f1f5f9;
+        }
+
+        /* Buttons - Matching Dashboard */
+        .btn {
+            padding: 0.45rem 0.9rem;
+            font-size: 0.75rem;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .btn-primary {
+            background: #10b981;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #059669;
+        }
+
+        .btn-secondary {
+            background: #64748b;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #475569;
+        }
+
+        .btn-warning {
+            background: #f59e0b;
+            color: white;
+        }
+
+        .btn-warning:hover {
+            background: #d97706;
+        }
+
+        .btn-danger {
+            background: #ef4444;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+
+        .btn-outline {
+            background: white;
+            border: 1px solid #e2e8f0;
+            color: #334155;
+        }
+
+        .btn-outline:hover {
+            background: #f1f5f9;
+        }
+
+        .btn-sm {
+            padding: 0.3rem 0.6rem;
+            font-size: 0.7rem;
+        }
+
+        /* Alert Messages */
+        .alert {
+            padding: 0.65rem 1rem;
+            border-radius: 10px;
+            margin-bottom: 1rem;
+            font-size: 0.75rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .alert-success {
+            background: #dcfce7;
+            color: #166534;
+            border-left: 3px solid #10b981;
+        }
+
+        .alert-error {
+            background: #fee2e2;
+            color: #991b1b;
+            border-left: 3px solid #ef4444;
+        }
+
+        /* Status Badges */
+        .status-badge {
+            display: inline-block;
+            padding: 0.2rem 0.55rem;
+            border-radius: 999px;
+            font-size: 0.65rem;
+            font-weight: 600;
+        }
+
+        .status-incubating {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .status-complete {
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .status-user {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+
+        .day-badge {
+            display: inline-block;
+            padding: 0.2rem 0.55rem;
+            border-radius: 999px;
+            font-size: 0.65rem;
+            font-weight: 600;
+        }
+
+        .day-early {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+
+        .day-mid {
+            background: #fed7aa;
+            color: #92400e;
+        }
+
+        .day-late {
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .badge-done {
+            display: inline-block;
+            padding: 0.2rem 0.55rem;
+            background: #dcfce7;
+            color: #166534;
+            border-radius: 999px;
+            font-size: 0.65rem;
+            font-weight: 600;
+        }
+
+        /* Action Buttons Container */
+        .action-btns {
+            display: flex;
+            gap: 0.4rem;
+            flex-wrap: wrap;
+        }
+
+        /* Progress Bar */
+        .mini-progress {
+            width: 80px;
+            height: 4px;
+            background: #e2e8f0;
+            border-radius: 10px;
+            overflow: hidden;
+            display: inline-block;
+            margin-right: 0.5rem;
+        }
+
+        .mini-bar {
+            height: 100%;
+            background: #10b981;
+            border-radius: 10px;
+        }
+
+        /* Timeline Card */
+        .timeline-card {
+            background: white;
+            border-radius: 12px;
+            padding: 0.85rem;
+            margin-bottom: 1rem;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+        }
+
+        .timeline-header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        .timeline-header i {
+            color: #10b981;
+            font-size: 1rem;
+        }
+
+        .timeline-header h3 {
+            font-size: 0.85rem;
+            font-weight: 600;
+            margin: 0;
+        }
+
+        .timeline-total {
+            font-size: 0.7rem;
+            color: #64748b;
+            margin-left: auto;
+        }
+
+        .timeline-bar {
+            display: flex;
+            height: 60px;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .tl-segment {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            font-size: 0.7rem;
+            font-weight: 500;
+            color: white;
+            padding: 0.25rem;
+        }
+
+        .tl-segment span {
+            font-weight: 600;
+        }
+
+        .tl-segment small {
+            font-size: 0.6rem;
+            opacity: 0.9;
+        }
+
+        .seg-safe {
+            background: #3b82f6;
+        }
+
+        .seg-balut {
+            background: #f59e0b;
+        }
+
+        .seg-watch {
+            background: #8b5cf6;
+        }
+
+        .seg-hatch {
+            background: #10b981;
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 2rem;
+            color: #64748b;
+        }
+
+        .empty-state i {
+            font-size: 2.5rem;
+            margin-bottom: 0.75rem;
+            opacity: 0.5;
+        }
+
+        /* Chart Row */
+        .chart-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .chart-card {
+            background: white;
+            border-radius: 12px;
+            padding: 1rem;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+        }
+
+        .chart-card h3 {
+            font-size: 0.85rem;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+        }
+
+        canvas {
+            max-height: 250px;
+        }
+
+        /* Batch Logs Section */
+        .batch-logs-section {
+            background: white;
+            border-radius: 12px;
+            padding: 0.85rem;
+            margin-bottom: 1rem;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+        }
+
+        .batch-logs-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.75rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .batch-logs-header h4 {
+            font-size: 0.85rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .batch-badge {
+            font-size: 0.65rem;
+            background: #f1f5f9;
+            padding: 0.2rem 0.5rem;
+            border-radius: 999px;
+            font-weight: normal;
+        }
+
+        .logs-summary {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 0.75rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid #f1f5f9;
+        }
+
+        .logs-summary-item {
+            font-size: 0.7rem;
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+        }
+
+        .daily-logs-mobile {
+            display: none;
+        }
+
+        .log-card {
+            background: #f8fafc;
+            border-radius: 10px;
+            padding: 0.6rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .log-card-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 0.5rem;
+            font-size: 0.7rem;
+        }
+
+        .log-day {
+            font-weight: 600;
+            color: #0f172a;
+        }
+
+        .log-date {
+            color: #64748b;
+        }
+
+        .log-stats {
+            display: flex;
+            gap: 0.8rem;
+            font-size: 0.7rem;
+        }
+
+        /* Remaining Info */
+        .remaining-info {
+            background: #dbeafe;
+            padding: 0.5rem;
+            border-radius: 8px;
+            font-size: 0.7rem;
+            margin-bottom: 0.75rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .lock-notice {
+            background: #fee2e2;
+            padding: 0.5rem;
+            border-radius: 8px;
+            font-size: 0.7rem;
+            margin-bottom: 0.75rem;
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .lock-notice strong {
+            display: block;
+            margin-bottom: 0.2rem;
+        }
+
+        /* Guide Section */
+        .guide-hero {
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+            border-radius: 16px;
+            padding: 1rem 1.5rem;
+            margin-bottom: 1.5rem;
+            color: white;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .guide-hero-icon {
+            font-size: 2rem;
+            opacity: 0.8;
+        }
+
+        .guide-hero h2 {
+            font-size: 1.1rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .guide-hero p {
+            font-size: 0.7rem;
+            opacity: 0.8;
+        }
+
+        .guide-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .guide-card {
+            background: white;
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+        }
+
+        .guide-card-header {
+            padding: 1rem;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .phase-num {
+            font-size: 0.65rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #64748b;
+        }
+
+        .guide-card-header h3 {
+            font-size: 1rem;
+            margin: 0.25rem 0;
+        }
+
+        .phase-days {
+            font-size: 0.7rem;
+            color: #64748b;
+        }
+
+        .guide-list {
+            list-style: none;
+            padding: 1rem;
+        }
+
+        .guide-list li {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.75rem;
+            padding: 0.4rem 0;
+            border-bottom: 1px solid #f1f5f9;
+        }
+
+        .guide-list li i {
+            width: 18px;
+            color: #10b981;
+        }
+
+        .guide-tip {
+            background: #fef3c7;
+            margin: 0 1rem 1rem 1rem;
+            padding: 0.6rem;
+            border-radius: 10px;
+            font-size: 0.7rem;
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .guide-tip i {
+            color: #f59e0b;
+        }
+
+        .phase-early .guide-card-header {
+            border-left: 3px solid #3b82f6;
+        }
+
+        .phase-balut .guide-card-header {
+            border-left: 3px solid #f59e0b;
+        }
+
+        .phase-watch .guide-card-header {
+            border-left: 3px solid #8b5cf6;
+        }
+
+        .phase-hatch .guide-card-header {
+            border-left: 3px solid #10b981;
+        }
+
+        /* Activity time */
+        .activity-time {
+            font-size: 0.7rem;
+            color: #64748b;
+        }
+
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 2000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 16px;
+            width: 90%;
+            max-width: 400px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
+            animation: modalSlideIn 0.2s ease;
+        }
+
+        @keyframes modalSlideIn {
+            from {
+                transform: translateY(-30px);
+                opacity: 0;
+            }
+
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+
+        .modal-header {
+            padding: 0.85rem 1.2rem;
+            border-bottom: 1px solid #e2e8f0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-header h3 {
+            font-size: 1rem;
+            margin: 0;
+        }
+
+        .close {
+            font-size: 1.3rem;
+            cursor: pointer;
+            color: #94a3b8;
+            background: none;
+            border: none;
+        }
+
+        .modal-body {
+            padding: 1.2rem;
+        }
+
+        .modal-footer {
+            padding: 0.85rem 1.2rem;
+            border-top: 1px solid #e2e8f0;
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.6rem;
+        }
+
+        .form-group {
+            margin-bottom: 0.85rem;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 0.35rem;
+            font-size: 0.75rem;
+            font-weight: 500;
+            color: #334155;
+        }
+
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 0.5rem;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 0.8rem;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #10b981;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .mobile-menu-btn {
+                display: block;
+            }
+
+            .sidebar {
+                transform: translateX(-100%);
+            }
+
+            .sidebar.open {
+                transform: translateX(0);
+            }
+
+            .main-content {
+                margin-left: 0;
+                padding: 0.85rem;
+                padding-top: 3.5rem;
+                width: 100%;
+            }
+
+            .stats-grid {
+                grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+                gap: 0.6rem;
+            }
+
+            .action-bar {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .action-bar-left {
+                justify-content: center;
+            }
+
+            .timeline-bar {
+                flex-direction: column;
+                height: auto;
+            }
+
+            .tl-segment {
+                padding: 0.5rem;
+            }
+
+            .daily-logs-desktop {
+                display: none;
+            }
+
+            .daily-logs-mobile {
+                display: block;
+            }
+
+            .chart-row {
+                grid-template-columns: 1fr;
+            }
+
+            .guide-hero {
+                flex-direction: column;
+                text-align: center;
+            }
+        }
+    </style>
 </head>
 
 <body>
-    <div class="dashboard">
+    <button class="mobile-menu-btn" id="mobileMenuBtn">
+        <i class="fas fa-bars"></i>
+    </button>
+    <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeMobileMenu()"></div>
 
-        <!-- Sidebar -->
-        <aside class="sidebar">
+    <div class="dashboard">
+        <!-- Sidebar - Professional unified style -->
+        <aside class="sidebar" id="sidebar">
             <div class="sidebar-header">
-                <h2><i class="fas fa-egg"></i> EggFlow</h2>
-                <p>Incubation Tracker</p>
+                <h2><i class="fas fa-chart-line"></i> EggFlow</h2>
+                <p>User Panel</p>
             </div>
             <ul class="sidebar-menu">
-                <li class="nav-item active" data-tab="overview">
-                    <a href="#"><i class="fas fa-tachometer-alt"></i> Overview</a>
+                <li class="<?= $activeTab === 'overview' ? 'active' : '' ?>">
+                    <a href="?tab=overview"><i class="fas fa-tachometer-alt"></i> Overview</a>
                 </li>
-                <li class="nav-item" data-tab="batches">
-                    <a href="#"><i class="fas fa-layer-group"></i> My Batches</a>
+                <li class="<?= $activeTab === 'batches' ? 'active' : '' ?>">
+                    <a href="?tab=batches"><i class="fas fa-layer-group"></i> My Batches</a>
                 </li>
-                <li class="nav-item" data-tab="analytics">
-                    <a href="#"><i class="fas fa-chart-line"></i> Analytics</a>
+                <li class="<?= $activeTab === 'analytics' ? 'active' : '' ?>">
+                    <a href="?tab=analytics"><i class="fas fa-chart-line"></i> Analytics</a>
                 </li>
-                <li class="nav-item" data-tab="guide">
-                    <a href="#"><i class="fas fa-book-open"></i> Incubation Guide</a>
+                <li class="<?= $activeTab === 'reports' ? 'active' : '' ?>">
+                    <a href="?tab=reports"><i class="fas fa-file-alt"></i> Reports</a>
+                </li>
+                <li class="<?= $activeTab === 'profile' ? 'active' : '' ?>">
+                    <a href="?tab=profile"><i class="fas fa-user-circle"></i> Profile</a>
                 </li>
                 <li>
-                    <a href="../../controller/auth/signout.php">
-                        <i class="fas fa-sign-out-alt"></i> Logout
-                    </a>
+                    <a href="../../controller/auth/signout.php"><i class="fas fa-sign-out-alt"></i> Logout</a>
                 </li>
             </ul>
         </aside>
 
         <!-- Main Content -->
         <main class="main-content">
-
-            <!-- Top Bar -->
+            <!-- Top Bar - Professional style -->
             <div class="top-bar">
                 <div class="welcome-text">
-                    <h1>Welcome, <?= htmlspecialchars($_SESSION['user_name'] ?? 'User') ?>!</h1>
-                    <p id="page-subtitle">Overview of your incubation batches</p>
+                    <h1><?= $activeTab === 'overview' ? 'Dashboard Overview' : ($activeTab === 'batches' ? 'My Batches' : ($activeTab === 'analytics' ? 'Production Analytics' : ($activeTab === 'reports' ? 'My Reports' : 'My Profile'))) ?></h1>
+                    <p><i class="fas fa-user"></i> Welcome back, <?= htmlspecialchars($username) ?>! Track your production and manage your batches.</p>
                 </div>
                 <div class="date-badge">
-                    <i class="far fa-calendar-alt"></i> <?= date('l, F j, Y') ?>
+                    <i class="far fa-calendar-alt"></i> <?= date('M d, Y') ?>
                 </div>
             </div>
 
@@ -312,45 +1309,40 @@ $js_vars = [
             endif; ?>
 
             <!-- =================== OVERVIEW TAB =================== -->
-            <div id="overview-section" class="tab-section active">
+            <?php if ($activeTab === 'overview'): ?>
+                <!-- Stats Cards -->
                 <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-info">
+                            <h3>My Batches</h3>
+                            <p><?= count($batches) ?></p>
+                        </div>
+                        <div class="stat-icon"><i class="fas fa-layer-group"></i></div>
+                    </div>
                     <div class="stat-card">
                         <div class="stat-info">
                             <h3>Incubating</h3>
                             <p><?= $stat_incubating ?></p>
                         </div>
-                        <div class="stat-icon ic-yellow"><i class="fas fa-egg"></i></div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-info">
-                            <h3>Completed</h3>
-                            <p><?= $stat_complete ?></p>
-                        </div>
-                        <div class="stat-icon ic-green"><i class="fas fa-check-circle"></i></div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-info">
-                            <h3>Total Balut</h3>
-                            <p><?= number_format($stat_balut) ?></p>
-                        </div>
-                        <div class="stat-icon ic-blue"><i class="fas fa-drumstick-bite"></i></div>
+                        <div class="stat-icon"><i class="fas fa-egg"></i></div>
                     </div>
                     <div class="stat-card">
                         <div class="stat-info">
                             <h3>Total Chicks</h3>
                             <p><?= number_format($stat_chicks) ?></p>
                         </div>
-                        <div class="stat-icon ic-purple"><i class="fas fa-dove"></i></div>
+                        <div class="stat-icon"><i class="fas fa-hat-wizard"></i></div>
                     </div>
                     <div class="stat-card">
                         <div class="stat-info">
-                            <h3>Chick Rate</h3>
-                            <p><?= $success_rate ?>%</p>
+                            <h3>Total Balut</h3>
+                            <p><?= number_format($stat_balut) ?></p>
                         </div>
-                        <div class="stat-icon ic-pink"><i class="fas fa-chart-line"></i></div>
+                        <div class="stat-icon"><i class="fas fa-drumstick-bite"></i></div>
                     </div>
                 </div>
 
+                <!-- Incubation Timeline -->
                 <div class="timeline-card">
                     <div class="timeline-header">
                         <i class="fas fa-clock"></i>
@@ -358,19 +1350,20 @@ $js_vars = [
                         <span class="timeline-total">28 Days Total</span>
                     </div>
                     <div class="timeline-bar">
-                        <div class="tl-segment seg-safe" style="width:46.4%"><span>Days 1–13</span><small>Embryo Development</small></div>
+                        <div class="tl-segment seg-safe" style="width:46.4%"><span>Days 1–13</span><small>Development</small></div>
                         <div class="tl-segment seg-balut" style="width:17.9%"><span>Days 14–18</span><small>🥚 Balut Ready</small></div>
-                        <div class="tl-segment seg-watch" style="width:25%"> <span>Days 19–25</span><small>Late Development</small></div>
+                        <div class="tl-segment seg-watch" style="width:25%"><span>Days 19–25</span><small>Late Dev</small></div>
                         <div class="tl-segment seg-hatch" style="width:10.7%"><span>Days 26–28</span><small>🐣 Hatching</small></div>
                     </div>
                 </div>
 
+                <!-- Active Batches -->
                 <div class="table-container">
                     <div class="table-header">
-                        <h3>Active Batches</h3>
-                        <button class="btn btn-primary btn-sm" onclick="switchTab('batches')">
+                        <h3><i class="fas fa-play-circle"></i> Active Batches</h3>
+                        <a href="?tab=batches" class="btn btn-outline btn-sm">
                             <i class="fas fa-layer-group"></i> View All
-                        </button>
+                        </a>
                     </div>
                     <?php
                     $active = array_filter($batches, function ($b) {
@@ -380,10 +1373,10 @@ $js_vars = [
                     <?php if (empty($active)): ?>
                         <div class="empty-state">
                             <i class="fas fa-box-open"></i>
-                            <p>No active batches. <a href="#" onclick="switchTab('batches')">Add your first batch →</a></p>
+                            <p>No active batches. <a href="#" onclick="openAddModal()">Start your first batch →</a></p>
                         </div>
                     <?php else: ?>
-                        <div class="table-wrapper">
+                        <div class="table-scroll-wrapper">
                             <table class="data-table">
                                 <thead>
                                     <tr>
@@ -417,9 +1410,9 @@ $js_vars = [
                                             <td data-label="Remaining"><?= number_format($rem) ?></td>
                                             <td data-label="Action">
                                                 <?php if ($logged): ?>
-                                                    <span class="badge-done"><i class="fas fa-check"></i> Updated</span>
+                                                    <span class="badge-done"><i class="fas fa-check"></i> Updated Today</span>
                                                 <?php elseif ($rem > 0): ?>
-                                                    <button class="btn btn-success btn-sm" onclick="openUpdateModal(<?= $b['egg_id'] ?>, <?= $day ?>, <?= $rem ?>, <?= $locked ? 'true' : 'false' ?>)">
+                                                    <button class="btn btn-warning btn-sm" onclick="openUpdateModal(<?= $b['egg_id'] ?>, <?= $day ?>, <?= $rem ?>, <?= $locked ? 'true' : 'false' ?>)">
                                                         <i class="fas fa-edit"></i> Update
                                                     </button>
                                                 <?php else: ?>
@@ -434,24 +1427,25 @@ $js_vars = [
                     <?php endif; ?>
                 </div>
 
+                <!-- Recent Activity -->
                 <?php if (!empty($logs)): ?>
                     <div class="table-container">
                         <div class="table-header">
-                            <h3>Recent Activity</h3>
+                            <h3><i class="fas fa-history"></i> Recent Activity</h3>
                         </div>
-                        <div class="table-wrapper">
+                        <div class="table-scroll-wrapper">
                             <table class="data-table">
                                 <thead>
                                     <tr>
-                                        <th>Time</th>
+                                        <th>Date & Time</th>
                                         <th>Action</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <?php foreach (array_slice($logs, 0, 8) as $log): ?>
                                         <tr>
-                                            <td data-label="Time" class="activity-time"><?= date('M d, H:i', strtotime($log['log_date'])) ?></td>
-                                            <td data-label="Action"><?= htmlspecialchars($log['action']) ?></td>
+                                            <td class="activity-time"><?= timeAgo($log['log_date']) ?><br><small><?= formatDateTime($log['log_date']) ?></small></td>
+                                            <td><?= htmlspecialchars($log['action']) ?></td>
                                         </tr>
                                     <?php endforeach; ?>
                                 </tbody>
@@ -459,19 +1453,21 @@ $js_vars = [
                         </div>
                     </div>
                 <?php endif; ?>
-            </div>
+            <?php endif; ?>
 
             <!-- =================== BATCHES TAB =================== -->
-            <div id="batches-section" class="tab-section">
+            <?php if ($activeTab === 'batches'): ?>
                 <div class="action-bar">
-                    <button class="btn btn-primary" onclick="openAddModal()">
-                        <i class="fas fa-plus-circle"></i> Add New Batch
-                    </button>
+                    <div class="action-bar-left">
+                        <button class="btn btn-primary" onclick="openAddModal()">
+                            <i class="fas fa-plus-circle"></i> Add New Batch
+                        </button>
+                    </div>
                 </div>
 
                 <div class="table-container">
                     <div class="table-header">
-                        <h3>All Batches</h3>
+                        <h3><i class="fas fa-layer-group"></i> All Batches</h3>
                     </div>
                     <?php if (empty($batches)): ?>
                         <div class="empty-state">
@@ -479,7 +1475,7 @@ $js_vars = [
                             <p>No batches yet. Click "Add New Batch" to get started!</p>
                         </div>
                     <?php else: ?>
-                        <div class="table-wrapper">
+                        <div class="table-scroll-wrapper">
                             <table class="data-table">
                                 <thead>
                                     <tr>
@@ -517,10 +1513,10 @@ $js_vars = [
                                                 <div class="action-btns">
                                                     <?php if ($b['status'] === 'incubating' && $rem > 0 && !$logged): ?>
                                                         <button class="btn btn-warning btn-sm" onclick="openUpdateModal(<?= $b['egg_id'] ?>, <?= $day ?>, <?= $rem ?>, <?= $locked ? 'true' : 'false' ?>)">
-                                                            <i class="fas fa-edit"></i> Update
+                                                            <i class="fas fa-edit"></i>
                                                         </button>
                                                     <?php elseif ($logged && $b['status'] === 'incubating'): ?>
-                                                        <span class="badge-done"><i class="fas fa-check"></i> Done today</span>
+                                                        <span class="badge-done"><i class="fas fa-check"></i></span>
                                                     <?php endif; ?>
                                                     <form method="post" style="display:inline;" onsubmit="return confirm('Delete this batch? Cannot be undone.')">
                                                         <input type="hidden" name="egg_id" value="<?= $b['egg_id'] ?>">
@@ -538,9 +1534,8 @@ $js_vars = [
                     <?php endif; ?>
                 </div>
 
-                <?php
-                // Display daily logs for each batch with improved layout
-                foreach ($batches as $b):
+                <!-- Daily Logs for Each Batch -->
+                <?php foreach ($batches as $b):
                     try {
                         $ls = $conn->prepare("SELECT * FROM egg_daily_logs WHERE egg_id = ? ORDER BY day_number ASC");
                         $ls->execute([$b['egg_id']]);
@@ -550,30 +1545,22 @@ $js_vars = [
                     }
                     if (empty($dlogs)) continue;
 
-                    // Calculate totals for this batch
                     $total_balut = array_sum(array_column($dlogs, 'balut_count'));
                     $total_chicks = array_sum(array_column($dlogs, 'chick_count'));
                     $total_failed = array_sum(array_column($dlogs, 'failed_count'));
                 ?>
                     <div class="batch-logs-section">
                         <div class="batch-logs-header">
-                            <h4>
-                                <i class="fas fa-history"></i>
-                                Batch #<?= $b['batch_number'] ?> — Daily Log
-                                <span class="batch-badge"><?= count($dlogs) ?> days recorded</span>
-                            </h4>
+                            <h4><i class="fas fa-history"></i> Batch #<?= $b['batch_number'] ?> — Daily Log</h4>
+                            <span class="batch-badge"><?= count($dlogs) ?> days recorded</span>
                         </div>
-
-                        <!-- Summary stats for the batch -->
                         <div class="logs-summary">
                             <span class="logs-summary-item"><i class="fas fa-drumstick-bite" style="color:#f59e0b"></i> Balut: <?= number_format($total_balut) ?></span>
                             <span class="logs-summary-item"><i class="fas fa-dove" style="color:#10b981"></i> Chicks: <?= number_format($total_chicks) ?></span>
                             <span class="logs-summary-item"><i class="fas fa-times-circle" style="color:#ef4444"></i> Failed: <?= number_format($total_failed) ?></span>
                         </div>
-
-                        <!-- Desktop view: Standard table -->
-                        <div class="table-wrapper daily-logs-desktop">
-                            <table class="data-table keep-standard">
+                        <div class="table-scroll-wrapper daily-logs-desktop">
+                            <table class="data-table">
                                 <thead>
                                     <tr>
                                         <th>Day</th>
@@ -586,18 +1573,16 @@ $js_vars = [
                                 <tbody>
                                     <?php foreach ($dlogs as $dl): ?>
                                         <tr>
-                                            <td data-label="Day">Day <?= $dl['day_number'] ?></td>
-                                            <td data-label="Balut"><?= number_format($dl['balut_count']) ?></td>
-                                            <td data-label="Chicks"><?= number_format($dl['chick_count']) ?></td>
-                                            <td data-label="Failed"><?= number_format($dl['failed_count']) ?></td>
-                                            <td data-label="Date Logged"><?= date('M d, Y', strtotime($dl['created_at'])) ?></td>
+                                            <td>Day <?= $dl['day_number'] ?></td>
+                                            <td><?= number_format($dl['balut_count']) ?></td>
+                                            <td><?= number_format($dl['chick_count']) ?></td>
+                                            <td><?= number_format($dl['failed_count']) ?></td>
+                                            <td><?= date('M d, Y', strtotime($dl['created_at'])) ?></td>
                                         </tr>
                                     <?php endforeach; ?>
                                 </tbody>
                             </table>
                         </div>
-
-                        <!-- Mobile view: Card-based layout -->
                         <div class="daily-logs-mobile">
                             <?php foreach ($dlogs as $dl): ?>
                                 <div class="log-card">
@@ -615,92 +1600,150 @@ $js_vars = [
                         </div>
                     </div>
                 <?php endforeach; ?>
-            </div>
+            <?php endif; ?>
 
             <!-- =================== ANALYTICS TAB =================== -->
-            <div id="analytics-section" class="tab-section">
+            <?php if ($activeTab === 'analytics'): ?>
                 <div class="stats-grid">
                     <div class="stat-card">
                         <div class="stat-info">
                             <h3>Total Eggs</h3>
                             <p><?= number_format($total_eggs) ?></p>
                         </div>
-                        <div class="stat-icon ic-green"><i class="fas fa-egg"></i></div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-info">
-                            <h3>Balut Rate</h3>
-                            <p><?= $balut_rate ?>%</p>
-                        </div>
-                        <div class="stat-icon ic-yellow"><i class="fas fa-percentage"></i></div>
+                        <div class="stat-icon"><i class="fas fa-egg"></i></div>
                     </div>
                     <div class="stat-card">
                         <div class="stat-info">
                             <h3>Chick Rate</h3>
                             <p><?= $success_rate ?>%</p>
                         </div>
-                        <div class="stat-icon ic-blue"><i class="fas fa-dove"></i></div>
+                        <div class="stat-icon"><i class="fas fa-chart-line"></i></div>
                     </div>
                     <div class="stat-card">
                         <div class="stat-info">
-                            <h3>Total Batches</h3>
-                            <p><?= count($batches) ?></p>
+                            <h3>Balut Rate</h3>
+                            <p><?= $balut_rate ?>%</p>
                         </div>
-                        <div class="stat-icon ic-purple"><i class="fas fa-layer-group"></i></div>
+                        <div class="stat-icon"><i class="fas fa-percentage"></i></div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-info">
+                            <h3>Success Rate</h3>
+                            <p><?= $processed_eggs > 0 ? round((($stat_chicks + $stat_balut) / $processed_eggs) * 100, 1) : 0 ?>%</p>
+                        </div>
+                        <div class="stat-icon"><i class="fas fa-trophy"></i></div>
                     </div>
                 </div>
 
                 <div class="chart-row">
                     <div class="chart-card">
-                        <h3><i class="fas fa-chart-pie" style="color:#10b981;margin-right:.5rem"></i>Outcome Distribution</h3>
-                        <canvas id="pieChart"></canvas>
+                        <h3><i class="fas fa-chart-pie" style="color:#10b981"></i> Production Distribution</h3>
+                        <canvas id="pieChartCanvas"></canvas>
                     </div>
                     <div class="chart-card">
-                        <h3><i class="fas fa-chart-bar" style="color:#3b82f6;margin-right:.5rem"></i>Daily Production Log</h3>
-                        <canvas id="dailyChart"></canvas>
+                        <h3><i class="fas fa-chart-bar" style="color:#3b82f6"></i> Daily Production Log</h3>
+                        <canvas id="dailyChartCanvas"></canvas>
                     </div>
                 </div>
 
-                <div class="chart-row">
-                    <div class="chart-card">
-                        <h3><i class="fas fa-chart-line" style="color:#f59e0b;margin-right:.5rem"></i>Batch Status</h3>
-                        <canvas id="statusChart"></canvas>
-                        <p style="text-align:center;color:#64748b;font-size:.85rem;margin-top:.75rem">
-                            Incubating: <strong><?= $stat_incubating ?></strong> &nbsp;|&nbsp; Complete: <strong><?= $stat_complete ?></strong>
-                        </p>
+                <div class="table-container">
+                    <div class="table-header">
+                        <h3><i class="fas fa-table"></i> Batch Summary</h3>
                     </div>
-                    <div class="chart-card">
-                        <h3><i class="fas fa-info-circle" style="color:#8b5cf6;margin-right:.5rem"></i>Batch Summary</h3>
-                        <div class="table-wrapper">
-                            <table class="data-table">
-                                <thead>
+                    <div class="table-scroll-wrapper">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Batch #</th>
+                                    <th>Eggs</th>
+                                    <th>Balut</th>
+                                    <th>Chicks</th>
+                                    <th>Failed</th>
+                                    <th>Success Rate</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($batches as $b):
+                                    $batch_proc = $b['failed_count'] + $b['balut_count'] + $b['chick_count'];
+                                    $batch_success = $batch_proc > 0 ? round(($b['chick_count'] / $batch_proc) * 100, 1) : 0;
+                                ?>
                                     <tr>
-                                        <th>Batch</th>
-                                        <th>Eggs</th>
-                                        <th>Balut</th>
-                                        <th>Chicks</th>
-                                        <th>Failed</th>
+                                        <td>#<?= $b['batch_number'] ?></td>
+                                        <td><?= number_format($b['total_egg']) ?></td>
+                                        <td><?= number_format($b['balut_count']) ?></td>
+                                        <td><?= number_format($b['chick_count']) ?></td>
+                                        <td><?= number_format($b['failed_count']) ?></td>
+                                        <td><strong><?= $batch_success ?>%</strong></td>
                                     </tr>
-                                </thead>
-                                <tbody>
-                                    <?php foreach ($batches as $b): ?>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            <?php endif; ?>
+
+            <!-- =================== REPORTS TAB =================== -->
+            <?php if ($activeTab === 'reports'): ?>
+                <div class="table-container">
+                    <div class="table-header">
+                        <h3><i class="fas fa-file-alt"></i> Activity Reports</h3>
+                    </div>
+                    <div class="table-scroll-wrapper">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Date & Time</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php if (empty($logs)): ?>
+                                    <tr>
+                                        <td colspan="2" class="empty-state">No activity logs found.</td>
+                                    </tr>
+                                <?php else: ?>
+                                    <?php foreach ($logs as $log): ?>
                                         <tr>
-                                            <td data-label="Batch">#<?= $b['batch_number'] ?></td>
-                                            <td data-label="Eggs"><?= number_format($b['total_egg']) ?></td>
-                                            <td data-label="Balut"><?= number_format($b['balut_count']) ?></td>
-                                            <td data-label="Chicks"><?= number_format($b['chick_count']) ?></td>
-                                            <td data-label="Failed"><?= number_format($b['failed_count']) ?></td>
+                                            <td class="activity-time"><?= timeAgo($log['log_date']) ?><br><small><?= formatDateTime($log['log_date']) ?></small></td>
+                                            <td><?= htmlspecialchars($log['action']) ?></td>
                                         </tr>
                                     <?php endforeach; ?>
-                                </tbody>
-                            </table>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="table-container">
+                    <div class="table-header">
+                        <h3><i class="fas fa-chart-simple"></i> Production Summary</h3>
+                    </div>
+                    <div class="stats-grid" style="margin-bottom: 0; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
+                        <div class="stat-card">
+                            <div class="stat-info">
+                                <h3>Total Batches</h3>
+                                <p><?= count($batches) ?></p>
+                            </div>
+                            <div class="stat-icon"><i class="fas fa-layer-group"></i></div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-info">
+                                <h3>Total Eggs Processed</h3>
+                                <p><?= number_format($processed_eggs) ?></p>
+                            </div>
+                            <div class="stat-icon"><i class="fas fa-calculator"></i></div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-info">
+                                <h3>Overall Success Rate</h3>
+                                <p><?= $processed_eggs > 0 ? round(($stat_chicks / $processed_eggs) * 100, 1) : 0 ?>%</p>
+                            </div>
+                            <div class="stat-icon"><i class="fas fa-trophy"></i></div>
                         </div>
                     </div>
                 </div>
-            </div>
 
-            <!-- =================== GUIDE TAB =================== -->
-            <div id="guide-section" class="tab-section">
+                <!-- Incubation Guide -->
                 <div class="guide-hero">
                     <i class="fas fa-egg guide-hero-icon"></i>
                     <div>
@@ -720,10 +1763,9 @@ $js_vars = [
                             <li><i class="fas fa-thermometer-half"></i> Maintain 37.5–38°C (99.5–100.4°F)</li>
                             <li><i class="fas fa-tint"></i> Humidity: 55–65%</li>
                             <li><i class="fas fa-sync-alt"></i> Turn eggs 3–5× daily</li>
-                            <li><i class="fas fa-search"></i> Candle at Day 7 to check fertility</li>
                             <li><i class="fas fa-ban"></i> <strong>Balut &amp; chick harvesting locked</strong></li>
                         </ul>
-                        <div class="guide-tip"><i class="fas fa-lightbulb"></i> Remove infertile or dead eggs during candling to prevent contamination.</div>
+                        <div class="guide-tip"><i class="fas fa-lightbulb"></i> Remove infertile eggs during candling.</div>
                     </div>
 
                     <div class="guide-card phase-balut">
@@ -736,7 +1778,6 @@ $js_vars = [
                             <li><i class="fas fa-egg"></i> Embryo well-developed — ideal for balut</li>
                             <li><i class="fas fa-fire"></i> Boil harvested eggs 20–30 minutes</li>
                             <li><i class="fas fa-star"></i> Day 17–18 is peak balut quality</li>
-                            <li><i class="fas fa-temperature-low"></i> Refrigerate unboiled eggs if not eaten immediately</li>
                         </ul>
                         <div class="guide-tip"><i class="fas fa-lightbulb"></i> The broth is rich in protein — crack a small hole and drink it first!</div>
                     </div>
@@ -751,9 +1792,8 @@ $js_vars = [
                             <li><i class="fas fa-eye"></i> Stop turning eggs at Day 25</li>
                             <li><i class="fas fa-tint"></i> Increase humidity to 70–75%</li>
                             <li><i class="fas fa-volume-up"></i> You may hear peeping inside the eggs</li>
-                            <li><i class="fas fa-exclamation-triangle"></i> Avoid opening the incubator unnecessarily</li>
                         </ul>
-                        <div class="guide-tip"><i class="fas fa-lightbulb"></i> Mist eggs lightly with warm water daily during this phase.</div>
+                        <div class="guide-tip"><i class="fas fa-lightbulb"></i> Mist eggs lightly with warm water daily.</div>
                     </div>
 
                     <div class="guide-card phase-hatch">
@@ -766,107 +1806,46 @@ $js_vars = [
                             <li><i class="fas fa-egg"></i> Pipping begins around Day 26</li>
                             <li><i class="fas fa-clock"></i> Full hatch takes 12–24 hrs — do not help</li>
                             <li><i class="fas fa-child"></i> Remove dried chicks 12–24h after hatch</li>
-                            <li><i class="fas fa-trash"></i> Discard unhatched eggs after Day 30</li>
                         </ul>
-                        <div class="guide-tip"><i class="fas fa-lightbulb"></i> Ducklings don't need food/water for 24h after hatch — yolk sac sustains them.</div>
+                        <div class="guide-tip"><i class="fas fa-lightbulb"></i> Ducklings don't need food/water for 24h after hatch.</div>
                     </div>
                 </div>
+            <?php endif; ?>
 
+            <!-- =================== PROFILE TAB =================== -->
+            <?php if ($activeTab === 'profile'): ?>
                 <div class="table-container">
                     <div class="table-header">
-                        <h3>Quick Reference: What Can Be Logged Per Day</h3>
+                        <h3><i class="fas fa-user-circle"></i> My Profile</h3>
                     </div>
-                    <div class="table-wrapper">
+                    <div class="table-scroll-wrapper">
                         <table class="data-table">
-                            <thead>
-                                <tr>
-                                    <th>Days</th>
-                                    <th>Failed Eggs</th>
-                                    <th>Balut</th>
-                                    <th>Chicks</th>
-                                    <th>Notes</th>
-                                </tr>
-                            </thead>
                             <tbody>
                                 <tr>
-                                    <td data-label="Days">1 – 13</td>
-                                    <td data-label="Failed Eggs"><span class="badge-yes">✓ Yes</span></td>
-                                    <td data-label="Balut"><span class="badge-no">✗ Locked</span></td>
-                                    <td data-label="Chicks"><span class="badge-no">✗ Locked</span></td>
-                                    <td data-label="Notes">Only failed/infertile removal allowed</td>
+                                    <td style="width: 140px; font-weight: 600;">Username</td>
+                                    <td><?= htmlspecialchars($username) ?></td>
                                 </tr>
                                 <tr>
-                                    <td data-label="Days">14 – 18</td>
-                                    <td data-label="Failed Eggs"><span class="badge-yes">✓ Yes</span></td>
-                                    <td data-label="Balut"><span class="badge-yes">✓ Yes</span></td>
-                                    <td data-label="Chicks"><span class="badge-no">✗ Locked</span></td>
-                                    <td data-label="Notes">Peak balut harvest window</td>
+                                    <td style="font-weight: 600;">Role</td>
+                                    <td><span class="status-badge status-user">User</span></td>
                                 </tr>
                                 <tr>
-                                    <td data-label="Days">19 – 24</td>
-                                    <td data-label="Failed Eggs"><span class="badge-yes">✓ Yes</span></td>
-                                    <td data-label="Balut"><span class="badge-yes">✓ Yes</span></td>
-                                    <td data-label="Chicks"><span class="badge-no">✗ Locked</span></td>
-                                    <td data-label="Notes">Late balut; monitor closely</td>
+                                    <td style="font-weight: 600;">Member Since</td>
+                                    <td><?= date('F j, Y', strtotime($_SESSION['created_at'] ?? 'now')) ?></td>
                                 </tr>
                                 <tr>
-                                    <td data-label="Days">25 – 28</td>
-                                    <td data-label="Failed Eggs"><span class="badge-yes">✓ Yes</span></td>
-                                    <td data-label="Balut"><span class="badge-yes">✓ Yes</span></td>
-                                    <td data-label="Chicks"><span class="badge-yes">✓ Yes</span></td>
-                                    <td data-label="Notes">Hatching window</td>
+                                    <td style="font-weight: 600;">Total Batches</td>
+                                    <td><?= count($batches) ?></td>
                                 </tr>
                                 <tr>
-                                    <td data-label="Days">29+</td>
-                                    <td data-label="Failed Eggs"><span class="badge-yes">✓ Yes</span></td>
-                                    <td data-label="Balut"><span class="badge-yes">✓ Yes</span></td>
-                                    <td data-label="Chicks"><span class="badge-yes">✓ Yes</span></td>
-                                    <td data-label="Notes">Discard unhatched after Day 30</td>
+                                    <td style="font-weight: 600;">Total Production</td>
+                                    <td><?= number_format($stat_chicks) ?> chicks, <?= number_format($stat_balut) ?> balut</td>
                                 </tr>
                             </tbody>
                         </table>
                     </div>
                 </div>
-
-                <div class="table-container">
-                    <div class="table-header">
-                        <h3>Troubleshooting</h3>
-                    </div>
-                    <div class="table-wrapper">
-                        <table class="data-table">
-                            <thead>
-                                <tr>
-                                    <th>Problem</th>
-                                    <th>Possible Cause</th>
-                                    <th>Solution</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <tr>
-                                    <td data-label="Problem">High failure rate early</td>
-                                    <td data-label="Possible Cause">Infertile eggs / temp spike</td>
-                                    <td data-label="Solution">Candle at Day 7; check thermostat</td>
-                                </tr>
-                                <tr>
-                                    <td data-label="Problem">No hatching after Day 28</td>
-                                    <td data-label="Possible Cause">Low humidity / temp too low</td>
-                                    <td data-label="Solution">Increase humidity; verify calibration</td>
-                                </tr>
-                                <tr>
-                                    <td data-label="Problem">Chick dies in shell</td>
-                                    <td data-label="Possible Cause">Humidity too low at hatch</td>
-                                    <td data-label="Solution">Mist eggs during lockdown phase</td>
-                                </tr>
-                                <tr>
-                                    <td data-label="Problem">Bad smell from incubator</td>
-                                    <td data-label="Possible Cause">Rotten/exploded egg</td>
-                                    <td data-label="Solution">Remove immediately; clean incubator</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
+            <?php endif; ?>
 
         </main>
     </div>
@@ -882,9 +1861,9 @@ $js_vars = [
                 <div class="modal-body">
                     <div class="form-group">
                         <label>Total Eggs</label>
-                        <input type="number" name="total_egg" min="1" placeholder="e.g. 100" required>
+                        <input type="number" name="total_egg" min="1" placeholder="e.g., 100" required>
                     </div>
-                    <div class="guide-tip" style="margin-top:1rem">
+                    <div class="guide-tip" style="margin-top:0.5rem">
                         <i class="fas fa-info-circle"></i>
                         Today is Day 1. The day will automatically increment each day.
                     </div>
@@ -930,7 +1909,7 @@ $js_vars = [
                         <label><i class="fas fa-dove" style="color:#10b981"></i> Chicks Hatched</label>
                         <input type="number" name="chick_count" id="chickInput" min="0" value="0" oninput="checkTotal()">
                     </div>
-                    <div id="validationMsg" class="alert alert-error" style="display:none;margin-top:.5rem"></div>
+                    <div id="validationMsg" class="alert alert-error" style="display:none;margin-top:0.5rem"></div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" onclick="closeModal('updateModal')">Cancel</button>
@@ -941,11 +1920,194 @@ $js_vars = [
     </div>
 
     <script>
-        // Pass PHP variables to JavaScript
-        window.EggFlowConfig = <?= json_encode($js_vars) ?>;
+        // Config from PHP
+        window.EggFlowConfig = {
+            totalBalut: <?= $stat_balut ?>,
+            totalChicks: <?= $stat_chicks ?>,
+            totalFailed: <?= $stat_failed ?>,
+            incubating: <?= $stat_incubating ?>,
+            complete: <?= $stat_complete ?>,
+            dailyAnalytics: <?= json_encode($daily_analytics) ?>,
+            batchRemaining: <?= json_encode($batch_remaining) ?>,
+            BALUT_UNLOCK: <?= BALUT_UNLOCK_DAY ?>,
+            CHICK_UNLOCK: <?= CHICK_UNLOCK_DAY ?>
+        };
+
+        let currentRemaining = 0;
+        let isLocked = false;
+
+        // Mobile menu
+        function toggleMobileMenu() {
+            document.getElementById('sidebar').classList.toggle('open');
+            const overlay = document.getElementById('sidebarOverlay');
+            if (overlay) {
+                overlay.style.display = document.getElementById('sidebar').classList.contains('open') ? 'block' : 'none';
+            }
+        }
+
+        function closeMobileMenu() {
+            document.getElementById('sidebar').classList.remove('open');
+            const overlay = document.getElementById('sidebarOverlay');
+            if (overlay) overlay.style.display = 'none';
+        }
+
+        document.getElementById('mobileMenuBtn').addEventListener('click', toggleMobileMenu);
+
+        // Modal functions
+        function openAddModal() {
+            document.getElementById('addModal').classList.add('active');
+        }
+
+        function openUpdateModal(eggId, day, remaining, locked) {
+            document.getElementById('updateEggId').value = eggId;
+            document.getElementById('modalDay').innerText = day;
+            document.getElementById('remainingText').innerText = remaining + ' eggs remaining';
+            currentRemaining = remaining;
+            isLocked = locked;
+
+            document.getElementById('failedInput').value = 0;
+            document.getElementById('balutInput').value = 0;
+            document.getElementById('chickInput').value = 0;
+
+            const balutGroup = document.getElementById('balutGroup');
+            const chickGroup = document.getElementById('chickGroup');
+            const lockNotice = document.getElementById('lockNotice');
+
+            if (locked) {
+                balutGroup.style.display = 'none';
+                chickGroup.style.display = 'none';
+                lockNotice.style.display = 'flex';
+                document.getElementById('balutInput').value = 0;
+                document.getElementById('chickInput').value = 0;
+            } else {
+                balutGroup.style.display = 'block';
+                chickGroup.style.display = 'block';
+                lockNotice.style.display = 'none';
+            }
+
+            document.getElementById('updateModal').classList.add('active');
+        }
+
+        function closeModal(modalId) {
+            document.getElementById(modalId).classList.remove('active');
+        }
+
+        function checkTotal() {
+            const failed = parseInt(document.getElementById('failedInput').value) || 0;
+            const balut = parseInt(document.getElementById('balutInput').value) || 0;
+            const chick = parseInt(document.getElementById('chickInput').value) || 0;
+            const total = failed + balut + chick;
+            const validationMsg = document.getElementById('validationMsg');
+            const submitBtn = document.getElementById('submitUpdateBtn');
+
+            if (total === 0) {
+                validationMsg.style.display = 'block';
+                validationMsg.innerHTML = '<i class="fas fa-exclamation-circle"></i> Enter at least one value greater than 0.';
+                submitBtn.disabled = true;
+            } else if (total > currentRemaining) {
+                validationMsg.style.display = 'block';
+                validationMsg.innerHTML = '<i class="fas fa-exclamation-circle"></i> Total exceeds remaining eggs (' + currentRemaining + ').';
+                submitBtn.disabled = true;
+            } else {
+                validationMsg.style.display = 'none';
+                submitBtn.disabled = false;
+            }
+        }
+
+        function validateUpdate() {
+            return !document.getElementById('submitUpdateBtn').disabled;
+        }
+
+        // Initialize Charts
+        document.addEventListener('DOMContentLoaded', function() {
+            // Pie Chart
+            const pieCtx = document.getElementById('pieChartCanvas');
+            if (pieCtx) {
+                new Chart(pieCtx, {
+                    type: 'pie',
+                    data: {
+                        labels: ['Chicks (' + window.EggFlowConfig.totalChicks + ')', 'Balut (' + window.EggFlowConfig.totalBalut + ')', 'Failed (' + window.EggFlowConfig.totalFailed + ')'],
+                        datasets: [{
+                            data: [window.EggFlowConfig.totalChicks, window.EggFlowConfig.totalBalut, window.EggFlowConfig.totalFailed],
+                            backgroundColor: ['#10b981', '#f59e0b', '#ef4444'],
+                            borderWidth: 0
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        plugins: {
+                            legend: {
+                                position: 'bottom',
+                                labels: {
+                                    font: {
+                                        size: 10
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            // Daily Chart
+            const dailyCtx = document.getElementById('dailyChartCanvas');
+            if (dailyCtx && window.EggFlowConfig.dailyAnalytics.length > 0) {
+                const days = window.EggFlowConfig.dailyAnalytics.map(d => 'Day ' + d.day_number);
+                const balut = window.EggFlowConfig.dailyAnalytics.map(d => d.balut || 0);
+                const chicks = window.EggFlowConfig.dailyAnalytics.map(d => d.chicks || 0);
+
+                new Chart(dailyCtx, {
+                    type: 'bar',
+                    data: {
+                        labels: days,
+                        datasets: [{
+                                label: 'Balut',
+                                data: balut,
+                                backgroundColor: '#f59e0b',
+                                borderRadius: 6
+                            },
+                            {
+                                label: 'Chicks',
+                                data: chicks,
+                                backgroundColor: '#10b981',
+                                borderRadius: 6
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        plugins: {
+                            legend: {
+                                position: 'top',
+                                labels: {
+                                    font: {
+                                        size: 10
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                grid: {
+                                    color: '#e2e8f0'
+                                }
+                            },
+                            x: {
+                                ticks: {
+                                    font: {
+                                        size: 9
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
     </script>
-    <script src="../../assets/user/js/user_dashboard.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </body>
 
 </html>
