@@ -15,6 +15,107 @@ if (!isset($conn) || $conn === null) {
     die("Database connection not established. Please check config.php");
 }
 
+// ── Report data handling (Matching Manager Dashboard) ──────────────────────────
+$reportData = [];
+$reportType = $_GET['report'] ?? '';
+$startDate  = $_GET['start'] ?? date('Y-m-01');
+$endDate    = $_GET['end']   ?? date('Y-m-d');
+
+if ($reportType === 'production_summary') {
+    // My Production Summary - User's own data only
+    $stmt = $conn->prepare("
+        SELECT 
+            e.batch_number,
+            e.total_egg,
+            e.status,
+            e.balut_count,
+            e.chick_count,
+            e.failed_count,
+            DATE(e.date_started_incubation) AS started_date,
+            (e.balut_count + e.chick_count) AS successful,
+            ROUND((e.chick_count / NULLIF(e.total_egg, 0)) * 100, 1) AS success_rate
+        FROM egg e
+        WHERE e.user_id = ?
+        ORDER BY e.batch_number DESC
+    ");
+    $stmt->execute([$user_id]);
+    $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} elseif ($reportType === 'batch_report') {
+    // My Batch Report - User's own batches
+    $stmt = $conn->prepare("
+        SELECT 
+            e.batch_number,
+            e.total_egg,
+            e.status,
+            DATE(e.date_started_incubation) AS started_date,
+            DATEDIFF(NOW(), e.date_started_incubation) + 1 AS current_day,
+            e.balut_count,
+            e.chick_count,
+            e.failed_count
+        FROM egg e
+        WHERE e.user_id = ?
+        ORDER BY e.batch_number DESC
+    ");
+    $stmt->execute([$user_id]);
+    $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} elseif ($reportType === 'daily_egg_logs') {
+    // Daily Egg Logs - User's own daily logs
+    $stmt = $conn->prepare("
+        SELECT 
+            e.batch_number,
+            edl.day_number,
+            edl.balut_count,
+            edl.chick_count,
+            edl.failed_count,
+            DATE(edl.created_at) AS log_date
+        FROM egg_daily_logs edl
+        JOIN egg e ON edl.egg_id = e.egg_id
+        WHERE e.user_id = ?
+            AND DATE(edl.created_at) BETWEEN ? AND ?
+        ORDER BY e.batch_number DESC, edl.day_number ASC
+    ");
+    $stmt->execute([$user_id, $startDate, $endDate]);
+    $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} elseif ($reportType === 'failed_egg_report') {
+    // Failed Egg Report - User's own failed eggs
+    $stmt = $conn->prepare("
+        SELECT 
+            e.batch_number,
+            SUM(edl.failed_count) AS total_failed,
+            COUNT(DISTINCT edl.day_number) AS days_with_failures,
+            MIN(DATE(edl.created_at)) AS first_failure_date,
+            MAX(DATE(edl.created_at)) AS last_failure_date
+        FROM egg_daily_logs edl
+        JOIN egg e ON edl.egg_id = e.egg_id
+        WHERE e.user_id = ?
+            AND edl.failed_count > 0
+            AND DATE(edl.created_at) BETWEEN ? AND ?
+        GROUP BY e.batch_number
+        ORDER BY total_failed DESC
+    ");
+    $stmt->execute([$user_id, $startDate, $endDate]);
+    $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} elseif ($reportType === 'monthly_summary') {
+    // Monthly Summary - User's own monthly totals
+    $stmt = $conn->prepare("
+        SELECT 
+            DATE_FORMAT(e.date_started_incubation, '%Y-%m') AS month,
+            COUNT(e.egg_id) AS batch_count,
+            SUM(e.total_egg) AS total_eggs,
+            SUM(e.balut_count) AS total_balut,
+            SUM(e.chick_count) AS total_chicks,
+            SUM(e.failed_count) AS total_failed,
+            ROUND((SUM(e.chick_count) / NULLIF(SUM(e.total_egg), 0)) * 100, 1) AS success_rate
+        FROM egg e
+        WHERE e.user_id = ?
+            AND DATE(e.date_started_incubation) BETWEEN ? AND ?
+        GROUP BY DATE_FORMAT(e.date_started_incubation, '%Y-%m')
+        ORDER BY month DESC
+    ");
+    $stmt->execute([$user_id, $startDate, $endDate]);
+    $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
 // Helper: format date/time properly
 function formatDateTime($datetime)
 {
@@ -495,6 +596,51 @@ $activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'overview';
             display: flex;
             gap: 0.75rem;
             flex-wrap: wrap;
+        }
+
+        /* Report Controls - Matching Manager Dashboard */
+        .report-controls {
+            background: white;
+            border-radius: 12px;
+            padding: 0.85rem;
+            margin-bottom: 1rem;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.6rem;
+            align-items: flex-end;
+        }
+
+        .report-controls .form-group {
+            flex: 1;
+            min-width: 130px;
+        }
+
+        .report-controls label {
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: #64748b;
+            display: block;
+            margin-bottom: 0.25rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .report-controls select,
+        .report-controls input[type="date"] {
+            width: 100%;
+            padding: 0.5rem 0.7rem;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 0.8rem;
+            font-family: 'Inter', sans-serif;
+        }
+
+        .report-controls select:focus,
+        .report-controls input[type="date"]:focus {
+            outline: none;
+            border-color: #10b981;
+            box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1);
         }
 
         /* Table Container - Matching Dashboard */
@@ -1182,6 +1328,78 @@ $activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'overview';
             border-color: #10b981;
         }
 
+        /* Toast Notification */
+        #customToast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            padding: 12px 20px;
+            border-radius: 8px;
+            color: white;
+            font-size: 0.875rem;
+            z-index: 10000;
+            display: none;
+            align-items: center;
+            gap: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+
+        /* Print Styles */
+        @media print {
+
+            .sidebar,
+            .mobile-menu-btn,
+            .sidebar-overlay,
+            .top-bar,
+            .stats-grid,
+            .timeline-card,
+            .action-bar,
+            .report-controls,
+            .sidebar-menu li,
+            .btn,
+            .guide-hero,
+            .guide-grid,
+            .batch-logs-section,
+            .table-container:not(#reportPreview) {
+                display: none !important;
+            }
+
+            #reportPreview {
+                display: block !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                box-shadow: none !important;
+            }
+
+            .main-content {
+                margin: 0 !important;
+                padding: 0 !important;
+            }
+
+            .table-scroll-wrapper {
+                overflow: visible !important;
+            }
+
+            .data-table {
+                border-collapse: collapse !important;
+                width: 100% !important;
+            }
+
+            .data-table th,
+            .data-table td {
+                border: 1px solid #ddd !important;
+                padding: 8px !important;
+            }
+
+            .data-table th {
+                background-color: #f2f2f2 !important;
+            }
+
+            h3 {
+                margin-top: 0 !important;
+            }
+        }
+
         /* Responsive */
         @media (max-width: 768px) {
             .mobile-menu-btn {
@@ -1241,6 +1459,20 @@ $activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'overview';
             .guide-hero {
                 flex-direction: column;
                 text-align: center;
+            }
+
+            .report-controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .report-controls .form-group {
+                min-width: auto;
+            }
+
+            .btn {
+                width: 100%;
+                justify-content: center;
             }
         }
     </style>
@@ -1682,64 +1914,80 @@ $activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'overview';
                 </div>
             <?php endif; ?>
 
-            <!-- =================== REPORTS TAB =================== -->
+            <!-- =================== REPORTS TAB (Improved - Matching Manager Dashboard) =================== -->
             <?php if ($activeTab === 'reports'): ?>
-                <div class="table-container">
-                    <div class="table-header">
-                        <h3><i class="fas fa-file-alt"></i> Activity Reports</h3>
+                <!-- Report Controls Section - Exactly matching Manager layout -->
+                <div class="report-controls">
+                    <div class="form-group">
+                        <label>Report Type</label>
+                        <select id="reportType">
+                            <option value="production_summary" <?= $reportType == 'production_summary' ? 'selected' : '' ?>>My Production Summary</option>
+                            <option value="batch_report" <?= $reportType == 'batch_report' ? 'selected' : '' ?>>My Batch Report</option>
+                            <option value="daily_egg_logs" <?= $reportType == 'daily_egg_logs' ? 'selected' : '' ?>>Daily Egg Logs</option>
+                            <option value="failed_egg_report" <?= $reportType == 'failed_egg_report' ? 'selected' : '' ?>>Failed Egg Report</option>
+                            <option value="monthly_summary" <?= $reportType == 'monthly_summary' ? 'selected' : '' ?>>Monthly Summary</option>
+                        </select>
                     </div>
-                    <div class="table-scroll-wrapper">
-                        <table class="data-table">
-                            <thead>
-                                <tr>
-                                    <th>Date & Time</th>
-                                    <th>Action</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php if (empty($logs)): ?>
-                                    <tr>
-                                        <td colspan="2" class="empty-state">No activity logs found.</td>
-                                    </tr>
-                                <?php else: ?>
-                                    <?php foreach ($logs as $log): ?>
-                                        <tr>
-                                            <td class="activity-time"><?= timeAgo($log['log_date']) ?><br><small><?= formatDateTime($log['log_date']) ?></small></td>
-                                            <td><?= htmlspecialchars($log['action']) ?></td>
-                                        </tr>
-                                    <?php endforeach; ?>
-                                <?php endif; ?>
-                            </tbody>
-                        </table>
+                    <div class="form-group">
+                        <label>Start Date</label>
+                        <input type="date" id="startDate" value="<?= $startDate ?>">
                     </div>
+                    <div class="form-group">
+                        <label>End Date</label>
+                        <input type="date" id="endDate" value="<?= $endDate ?>">
+                    </div>
+                    <button class="btn btn-primary" onclick="generateReport()">
+                        <i class="fas fa-chart-bar"></i> Generate
+                    </button>
+                    <button class="btn btn-outline" onclick="exportCSV()">
+                        <i class="fas fa-file-csv"></i> Export CSV
+                    </button>
+                    <button class="btn btn-outline" onclick="printReport()">
+                        <i class="fas fa-print"></i> Print
+                    </button>
                 </div>
 
-                <div class="table-container">
+                <!-- Report Preview Section - Exactly matching Manager layout -->
+                <div class="table-container" id="reportPreview">
                     <div class="table-header">
-                        <h3><i class="fas fa-chart-simple"></i> Production Summary</h3>
+                        <h3 id="reportTitle">Report Preview</h3>
                     </div>
-                    <div class="stats-grid" style="margin-bottom: 0; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
-                        <div class="stat-card">
-                            <div class="stat-info">
-                                <h3>Total Batches</h3>
-                                <p><?= count($batches) ?></p>
-                            </div>
-                            <div class="stat-icon"><i class="fas fa-layer-group"></i></div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-info">
-                                <h3>Total Eggs Processed</h3>
-                                <p><?= number_format($processed_eggs) ?></p>
-                            </div>
-                            <div class="stat-icon"><i class="fas fa-calculator"></i></div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-info">
-                                <h3>Overall Success Rate</h3>
-                                <p><?= $processed_eggs > 0 ? round(($stat_chicks / $processed_eggs) * 100, 1) : 0 ?>%</p>
-                            </div>
-                            <div class="stat-icon"><i class="fas fa-trophy"></i></div>
-                        </div>
+                    <div class="table-scroll-wrapper" id="reportContent">
+                        <?php if ($reportData && !empty($reportData)): ?>
+                            <?php
+                            $titles = [
+                                'production_summary' => 'My Production Summary Report',
+                                'batch_report' => 'My Batch Report',
+                                'daily_egg_logs' => 'Daily Egg Logs Report',
+                                'failed_egg_report' => 'Failed Egg Report',
+                                'monthly_summary' => 'Monthly Summary Report',
+                            ];
+                            $title = $titles[$reportType] ?? 'Report Preview';
+                            ?>
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <?php foreach (array_keys($reportData[0]) as $col): ?>
+                                            <th><?= ucwords(str_replace('_', ' ', $col)) ?></th>
+                                        <?php endforeach; ?>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($reportData as $row): ?>
+                                        <tr>
+                                            <?php foreach ($row as $value): ?>
+                                                <td><?= htmlspecialchars($value ?? '0') ?></td>
+                                            <?php endforeach; ?>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        <?php else: ?>
+                            <p style="text-align:center; padding: 2rem; color:#94a3b8;">
+                                <i class="fas fa-chart-line" style="font-size: 2rem; margin-bottom: 0.5rem; display: block;"></i>
+                                Select a report type and date range, then click Generate to view your personal production data.
+                            </p>
+                        <?php endif; ?>
                     </div>
                 </div>
 
@@ -1919,6 +2167,8 @@ $activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'overview';
         </div>
     </div>
 
+    <div id="customToast"></div>
+
     <script>
         // Config from PHP
         window.EggFlowConfig = {
@@ -2018,8 +2268,85 @@ $activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'overview';
             return !document.getElementById('submitUpdateBtn').disabled;
         }
 
+        // ── Report Functions (Matching Manager Dashboard) ──────────────────────────────
+        function generateReport() {
+            const type = document.getElementById('reportType').value;
+            const start = document.getElementById('startDate').value;
+            const end = document.getElementById('endDate').value;
+
+            if (!start || !end) {
+                showToast('Please select both start and end dates.', 'error');
+                return;
+            }
+
+            // Reload page with report parameters - switches to Reports tab automatically
+            window.location.href = `?tab=reports&report=${type}&start=${start}&end=${end}`;
+        }
+
+        function exportCSV() {
+            const table = document.querySelector('#reportContent table');
+            if (!table) {
+                showToast('Generate a report first before exporting.', 'error');
+                return;
+            }
+
+            let csv = [];
+            const headers = [];
+
+            // Get headers
+            table.querySelectorAll('thead th').forEach(th => {
+                headers.push('"' + th.innerText.replace(/"/g, '""') + '"');
+            });
+            csv.push(headers.join(','));
+
+            // Get data rows
+            table.querySelectorAll('tbody tr').forEach(tr => {
+                const row = [];
+                tr.querySelectorAll('td').forEach(td => {
+                    row.push('"' + td.innerText.replace(/"/g, '""') + '"');
+                });
+                csv.push(row.join(','));
+            });
+
+            // Download CSV
+            const blob = new Blob(["\uFEFF" + csv.join('\n')], {
+                type: 'text/csv;charset=utf-8;'
+            });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `report_${document.getElementById('reportType').options[document.getElementById('reportType').selectedIndex].text}_${new Date().toISOString().slice(0,19).replace(/:/g, '-')}.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+            showToast('Report exported successfully!', 'success');
+        }
+
+        function printReport() {
+            window.print();
+        }
+
+        function showToast(message, type = 'success') {
+            const toast = document.getElementById('customToast');
+            toast.style.backgroundColor = type === 'success' ? '#10b981' : '#ef4444';
+            toast.innerHTML = `<i class="fas fa-${type === 'success' ? 'check-circle' : 'exclamation-circle'}"></i> ${message}`;
+            toast.style.display = 'flex';
+
+            setTimeout(() => {
+                toast.style.display = 'none';
+            }, 3000);
+        }
+
         // Initialize Charts
         document.addEventListener('DOMContentLoaded', function() {
+            // Initialize report on page load if report parameters exist
+            const urlParams = new URLSearchParams(window.location.search);
+            const reportParam = urlParams.get('report');
+            if (reportParam) {
+                // Ensure reports tab is active
+                document.querySelectorAll('.tab-section').forEach(s => s.classList.remove('active'));
+                document.getElementById('reports-section').classList.add('active');
+            }
+
             // Pie Chart
             const pieCtx = document.getElementById('pieChartCanvas');
             if (pieCtx) {
@@ -2106,6 +2433,9 @@ $activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'overview';
                     }
                 });
             }
+
+            // Close sidebar when clicking on overlay
+            document.getElementById('sidebarOverlay').addEventListener('click', closeMobileMenu);
         });
     </script>
 </body>
