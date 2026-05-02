@@ -439,12 +439,18 @@ $activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'users';
                 <input type="hidden" id="editUserId" value="">
                 <div class="modal-body">
                     <div class="form-group">
-                        <label>Username</label>
+                        <label>Username *</label>
                         <input type="text" id="modalUsername" name="username" required minlength="3" maxlength="50">
                     </div>
                     <div class="form-group">
-                        <label id="passwordLabel">Password</label>
-                        <input type="password" id="modalPassword" name="password">
+                        <label>Email Address *</label>
+                        <input type="email" id="modalEmail" name="email" required placeholder="user@example.com">
+                        <small style="color: #666;">A verification email will be sent to this address</small>
+                    </div>
+                    <div class="form-group">
+                        <label id="passwordLabel">Password *</label>
+                        <input type="password" id="modalPassword" name="password" required minlength="6">
+                        <small style="color: #666;">Minimum 6 characters</small>
                     </div>
                     <div class="form-group">
                         <label>Role</label>
@@ -457,6 +463,15 @@ $activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'users';
                                 <option value="user">Regular User</option>
                             <?php endif; ?>
                         </select>
+                    </div>
+                    <div class="form-group">
+                        <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                            <input type="checkbox" id="modalSendVerification" name="send_verification" value="1" checked style="width: auto;">
+                            <span>Send email verification</span>
+                        </label>
+                        <small style="color: #666; display: block; margin-top: 5px;">
+                            If unchecked, user will be auto-verified (no email sent)
+                        </small>
                     </div>
                 </div>
                 <div class="modal-footer">
