@@ -1,165 +1,114 @@
 <?php
 
 /**
- * Simple email sending function using PHPMailer
- * Install: composer require phpmailer/phpmailer
- * Or download manually from https://github.com/PHPMailer/PHPMailer
+ * Simple email helper that NEVER blocks user creation
+ * Email failure = show link, continue normally
  */
 
 require_once __DIR__ . '/config.php';
 
+/**
+ * Send verification email using PHP mail() function
+ * Returns true/false but NEVER throws exceptions
+ * 
+ * @param string $to Recipient email
+ * @param string $username Recipient username  
+ * @param string $token Verification token
+ * @return bool True if mail was accepted for delivery, false otherwise
+ */
 function sendVerificationEmail($to, $username, $token)
 {
-    $verificationLink = APP_URL . "/app/auth/verify-email.php?token=" . urlencode($token);
+    $verificationLink = BASE_URL . "/controller/auth/verify-email.php?token=" . urlencode($token);
 
-    $subject = "Verify Your Email - EggFlow";
+    $subject = "Verify Your Email - " . APP_NAME;
 
-    // HTML Email Template
-    $htmlContent = '
+    // HTML Email Body
+    $htmlBody = getEmailHTML($username, $verificationLink);
+
+    // Plain text fallback
+    $textBody = "Hello $username!\n\n";
+    $textBody .= "Verify your email: $verificationLink\n\n";
+    $textBody .= "This link expires in 24 hours.\n";
+
+    // Email headers
+    $headers = "MIME-Version: 1.0\r\n";
+    $headers .= "Content-type:text/html;charset=UTF-8\r\n";
+    $headers .= "From: " . MAIL_FROM_NAME . " <" . MAIL_FROM . ">\r\n";
+
+    // Simple mail() call - NO try/catch, NO exceptions
+    // Just returns true/false based on whether PHP accepted the mail
+    return @mail($to, $subject, $htmlBody, $headers);
+}
+
+/**
+ * Get HTML email template
+ */
+function getEmailHTML($username, $verificationLink)
+{
+    return '
     <!DOCTYPE html>
     <html>
     <head>
         <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Email Verification</title>
         <style>
-            body {
-                font-family: Arial, sans-serif;
-                background-color: #f4f4f4;
-                margin: 0;
-                padding: 0;
-            }
-            .container {
-                max-width: 600px;
-                margin: 0 auto;
-                padding: 20px;
-                background-color: #ffffff;
-                border-radius: 10px;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            }
-            .header {
-                text-align: center;
-                padding: 20px 0;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                border-radius: 10px 10px 0 0;
-                color: white;
-            }
-            .header h1 {
-                margin: 0;
-                font-size: 24px;
-            }
-            .content {
-                padding: 30px;
-                text-align: center;
-            }
-            .button {
-                display: inline-block;
-                padding: 12px 30px;
-                background-color: #4CAF50;
-                color: white;
-                text-decoration: none;
-                border-radius: 5px;
-                margin: 20px 0;
-                font-weight: bold;
-            }
-            .button:hover {
-                background-color: #45a049;
-            }
-            .footer {
-                text-align: center;
-                padding: 20px;
-                font-size: 12px;
-                color: #666;
-                border-top: 1px solid #eee;
-            }
-            .warning {
-                color: #ff9800;
-                font-size: 12px;
-                margin-top: 10px;
-            }
+            body { font-family: Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 0; }
+            .container { max-width: 600px; margin: 20px auto; background: white; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-align: center; padding: 30px; }
+            .header h1 { margin: 0; font-size: 28px; }
+            .content { padding: 30px; text-align: center; }
+            .button { display: inline-block; padding: 12px 30px; background-color: #4CAF50; color: white; text-decoration: none; border-radius: 5px; margin: 20px 0; font-weight: bold; }
+            .warning { color: #ff9800; font-size: 12px; margin-top: 10px; }
+            .footer { text-align: center; padding: 20px; font-size: 12px; color: #666; border-top: 1px solid #eee; }
         </style>
     </head>
     <body>
         <div class="container">
             <div class="header">
-                <h1>🐣 EggFlow</h1>
+                <h1>🐣 ' . APP_NAME . '</h1>
                 <p>Verify Your Email Address</p>
             </div>
             <div class="content">
                 <h2>Hello ' . htmlspecialchars($username) . '!</h2>
-                <p>Thank you for creating an account with EggFlow. Please verify your email address to start using our service.</p>
+                <p>Thank you for creating an account. Please verify your email address.</p>
                 <a href="' . $verificationLink . '" class="button">Verify Email Address</a>
                 <p class="warning">⚠️ This verification link will expire in 24 hours.</p>
                 <p>If you did not create an account, please ignore this email.</p>
             </div>
             <div class="footer">
-                <p>&copy; ' . date('Y') . ' EggFlow. All rights reserved.</p>
-                <p>This is an automated message, please do not reply.</p>
+                <p>&copy; ' . date('Y') . ' ' . APP_NAME . '. All rights reserved.</p>
             </div>
         </div>
     </body>
     </html>';
-
-    // Plain text version
-    $textContent = "Hello $username!\n\n";
-    $textContent .= "Thank you for creating an account with EggFlow. Please verify your email address to start using our service.\n\n";
-    $textContent .= "Verification Link: $verificationLink\n\n";
-    $textContent .= "⚠️ This verification link will expire in 24 hours.\n\n";
-    $textContent .= "If you did not create an account, please ignore this email.\n\n";
-    $textContent .= "Best regards,\nEggFlow Team";
-
-    // Using PHP's mail() function (simplest, but may be filtered as spam)
-    // For production, use PHPMailer or SMTP
-
-    $headers = "MIME-Version: 1.0" . "\r\n";
-    $headers .= "Content-type:text/html;charset=UTF-8" . "\r\n";
-    $headers .= "From: " . SMTP_FROM_NAME . " <" . SMTP_FROM . ">" . "\r\n";
-
-    $mailSent = mail($to, $subject, $htmlContent, $headers);
-
-    // Alternative using PHPMailer (recommended)
-    // Uncomment below if you have PHPMailer installed
-    /*
-    use PHPMailer\PHPMailer\PHPMailer;
-    use PHPMailer\PHPMailer\SMTP;
-    use PHPMailer\PHPMailer\Exception;
-    
-    require_once __DIR__ . '/../vendor/autoload.php';
-    
-    $mail = new PHPMailer(true);
-    try {
-        $mail->isSMTP();
-        $mail->Host = SMTP_HOST;
-        $mail->SMTPAuth = true;
-        $mail->Username = SMTP_USER;
-        $mail->Password = SMTP_PASS;
-        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-        $mail->Port = SMTP_PORT;
-        
-        $mail->setFrom(SMTP_FROM, SMTP_FROM_NAME);
-        $mail->addAddress($to);
-        $mail->isHTML(true);
-        $mail->Subject = $subject;
-        $mail->Body = $htmlContent;
-        $mail->AltBody = $textContent;
-        
-        $mailSent = $mail->send();
-    } catch (Exception $e) {
-        $mailSent = false;
-        error_log("Email sending failed: " . $mail->ErrorInfo);
-    }
-    */
-
-    return $mailSent;
 }
 
-function logEmailActivity($conn, $userId, $action, $status, $details = null)
+/**
+ * Log email activity (doesn't affect flow)
+ */
+function logEmailActivity($conn, $userId, $action, $success, $details = null)
 {
-    $stmt = $conn->prepare("
-        INSERT INTO user_activity_logs (user_id, action, log_date) 
-        VALUES (?, ?, NOW())
-    ");
-    $actionMsg = $action . " - " . ($status ? "Success" : "Failed");
-    if ($details) $actionMsg .= " - " . $details;
-    $stmt->execute([$userId, $actionMsg]);
+    if (!$conn) return;
+
+    $status = $success ? "Success" : "Failed";
+    $actionMsg = $action . " - " . $status;
+    if ($details) {
+        $actionMsg .= " - " . substr($details, 0, 200);
+    }
+
+    try {
+        $stmt = $conn->prepare("INSERT INTO user_activity_logs (user_id, action, log_date) VALUES (?, ?, NOW())");
+        $stmt->execute([$userId, $actionMsg]);
+    } catch (Exception $e) {
+        // Silent fail - logging shouldn't break anything
+        error_log("Failed to log email activity: " . $e->getMessage());
+    }
+}
+
+/**
+ * Get verification link for display in UI
+ */
+function getVerificationLink($token)
+{
+    return BASE_URL . "/controller/auth/verify-email.php?token=" . urlencode($token);
 }

@@ -60,7 +60,6 @@ function openAddModal() {
     document.getElementById('userModal').style.display = 'block';
 }
 
-// Update the saveUser function
 async function saveUser(event) {
     event.preventDefault();
 
@@ -80,12 +79,10 @@ async function saveUser(event) {
         let url, method, data;
 
         if (userId) {
-            // Update existing user
             url = '../../controller/user-update.php';
             method = 'POST';
             data = { user_id: userId, username: username, role: role, email: email };
         } else {
-            // Create new user
             url = '../../controller/user-create.php';
             method = 'POST';
             data = { username: username, email: email, password: password, role: role, send_verification: sendVerification };
@@ -104,9 +101,21 @@ async function saveUser(event) {
         const result = await response.json();
 
         if (result.success) {
-            showToast(result.message, 'success');
+            // Close modal first
             closeModal();
-            setTimeout(() => location.reload(), 1500);
+            
+            // Show result in a copyable dialog
+            if (result.verification_link && !result.email_sent) {
+                // Email failed - show link prominently
+                showVerificationLinkDialog(result.message, result.verification_link);
+            } else if (result.verification_link && result.email_sent) {
+                // Email sent - still show link for testing
+                showVerificationLinkDialog(result.message + " (Check spam folder)", result.verification_link);
+            } else {
+                // No verification needed (auto-verified)
+                showToast(result.message, 'success');
+                setTimeout(() => location.reload(), 2000);
+            }
         } else {
             showToast(result.message, 'error');
         }
@@ -116,6 +125,107 @@ async function saveUser(event) {
     } finally {
         saveBtn.innerHTML = originalText;
         saveBtn.disabled = false;
+    }
+}
+
+// New function to show copyable verification link
+function showVerificationLinkDialog(message, verificationLink) {
+    // Create modal overlay
+    const overlay = document.createElement('div');
+    overlay.id = 'verificationLinkModal';
+    overlay.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0,0,0,0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 10000;
+    `;
+    
+    // Create modal content
+    const modal = document.createElement('div');
+    modal.style.cssText = `
+        background: white;
+        border-radius: 12px;
+        padding: 24px;
+        max-width: 500px;
+        width: 90%;
+        box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    `;
+    
+    modal.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+            <h3 style="margin: 0; color: #10b981;">
+                <i class="fas fa-check-circle"></i> ${message.includes('failed') ? 'User Created (Email Failed)' : 'User Created Successfully'}
+            </h3>
+            <button onclick="this.closest('#verificationLinkModal').remove()" style="background: none; border: none; font-size: 24px; cursor: pointer;">&times;</button>
+        </div>
+        
+        <div style="margin-bottom: 20px;">
+            <p style="color: #666; margin-bottom: 12px;">${message}</p>
+            
+            ${!message.includes('auto-verified') ? `
+                <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 16px; margin-top: 16px;">
+                    <p style="margin: 0 0 8px 0; font-weight: 600; color: #166534;">
+                        <i class="fas fa-link"></i> Verification Link (Click to copy):
+                    </p>
+                    <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                        <input type="text" id="verificationLinkInput" value="${verificationLink}" 
+                               style="flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 12px; background: #f9fafb;"
+                               readonly>
+                        <button onclick="copyVerificationLink()" style="background: #10b981; color: white; border: none; padding: 10px 16px; border-radius: 6px; cursor: pointer;">
+                            <i class="fas fa-copy"></i> Copy
+                        </button>
+                    </div>
+                    <p style="margin: 12px 0 0 0; font-size: 12px; color: #666;">
+                        <i class="fas fa-info-circle"></i> Click the link or copy it to your browser to verify the email address.
+                    </p>
+                </div>
+            ` : `
+                <div style="background: #e0f2fe; border: 1px solid #bae6fd; border-radius: 8px; padding: 16px; margin-top: 16px;">
+                    <p style="margin: 0; color: #0369a1;">
+                        <i class="fas fa-info-circle"></i> User is auto-verified. No email verification needed.
+                    </p>
+                </div>
+            `}
+        </div>
+        
+        <div style="display: flex; gap: 12px; justify-content: flex-end;">
+            <button onclick="this.closest('#verificationLinkModal').remove(); location.reload();" 
+                    style="background: #10b981; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer;">
+                <i class="fas fa-check"></i> OK, Reload Page
+            </button>
+        </div>
+    `;
+    
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    
+    // Store the link for the copy function
+    window.currentVerificationLink = verificationLink;
+}
+
+// Global function to copy link
+function copyVerificationLink() {
+    const input = document.getElementById('verificationLinkInput');
+    if (input) {
+        input.select();
+        document.execCommand('copy');
+        
+        // Show temporary feedback
+        const copyBtn = event.target.closest('button');
+        const originalText = copyBtn.innerHTML;
+        copyBtn.innerHTML = '<i class="fas fa-check"></i> Copied!';
+        setTimeout(() => {
+            copyBtn.innerHTML = originalText;
+        }, 2000);
+        
+        showToast('Link copied to clipboard!', 'success');
     }
 }
 

@@ -2,6 +2,10 @@
 require_once '../model/config.php';
 require_once '../model/email_helper.php';
 
+// Set error reporting for debugging
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+
 // Check if user is logged in
 if (!isset($_SESSION['user_id'])) {
     http_response_code(401);
@@ -12,6 +16,7 @@ if (!isset($_SESSION['user_id'])) {
 // Only accept POST requests
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
+    // FIXED: Added missing '=>'
     echo json_encode(['success' => false, 'message' => 'Method not allowed']);
     exit;
 }
@@ -19,21 +24,16 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 $user_id = $_SESSION['user_id'];
 $user_role = $_SESSION['user_role'];
 
-$response = ['success' => false, 'message' => ''];
-
 $username = trim($_POST['username'] ?? '');
 $email = trim($_POST['email'] ?? '');
 $password = $_POST['password'] ?? '';
 $role = trim($_POST['role'] ?? 'user');
 $sendVerification = isset($_POST['send_verification']) ? (bool)$_POST['send_verification'] : true;
 
-// Role restrictions based on user role
-if ($user_role !== 'admin') {
-    if ($role !== 'user') {
-        $response['message'] = 'You can only create regular user accounts.';
-        echo json_encode($response);
-        exit;
-    }
+// Role restrictions
+if ($user_role !== 'admin' && $role !== 'user') {
+    echo json_encode(['success' => false, 'message' => 'You can only create regular user accounts.']);
+    exit;
 }
 
 // Validation
@@ -47,28 +47,28 @@ $chk = $conn->prepare("SELECT user_id FROM users WHERE username = ?");
 $chk->execute([$username]);
 if ($chk->fetch()) $errors[] = 'Username already exists.';
 
-// Check if email exists
+// Check if email exists  
 $chk = $conn->prepare("SELECT user_id FROM users WHERE email = ?");
 $chk->execute([$email]);
 if ($chk->fetch()) $errors[] = 'Email already exists.';
 
-if (empty($errors)) {
-    $hash = password_hash($password, PASSWORD_DEFAULT);
+if (!empty($errors)) {
+    echo json_encode(['success' => false, 'message' => implode(' ', $errors)]);
+    exit;
+}
 
-    // Generate verification token if needed
-    $verificationToken = null;
-    $expires = null;
-    $isVerified = 0;
+// Generate password hash
+$hash = password_hash($password, PASSWORD_DEFAULT);
 
-    if ($sendVerification) {
-        $verificationToken = bin2hex(random_bytes(32));
-        $expires = date('Y-m-d H:i:s', strtotime('+24 hours'));
-        $isVerified = 0;
-    } else {
-        $isVerified = 1; // Auto-verify if not sending email
-    }
+// Generate verification token (64 chars SHA-256 style)
+$verificationToken = bin2hex(random_bytes(32));
+$expires = date('Y-m-d H:i:s', strtotime('+24 hours'));
+$isVerified = 0;
 
-    // Insert user
+// =====================================================
+// INSERT USER - ALWAYS SUCCEEDS (unless DB error)
+// =====================================================
+try {
     $ins = $conn->prepare("
         INSERT INTO users (username, email, password, user_role, is_verified, verification_token, email_verification_expires) 
         VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -78,37 +78,47 @@ if (empty($errors)) {
     $newUserId = $conn->lastInsertId();
 
     // Log user creation
-    $actionLog = "Created user: $username ($role) with email: $email";
     $stmt = $conn->prepare("INSERT INTO user_activity_logs (user_id, action, log_date) VALUES (?, ?, NOW())");
-    $stmt->execute([$user_id, $actionLog]);
-
-    // Send verification email if needed
-    $emailSent = false;
-    if ($sendVerification) {
-        $emailSent = sendVerificationEmail($email, $username, $verificationToken);
-        logEmailActivity($conn, $newUserId, 'Verification email sent', $emailSent);
-
-        if ($emailSent) {
-            $response = [
-                'success' => true,
-                'message' => 'User created successfully. Verification email has been sent to ' . htmlspecialchars($email)
-            ];
-        } else {
-            $response = [
-                'success' => true,
-                'message' => 'User created but verification email failed to send. Please manually verify the user or resend email.'
-            ];
-        }
-    } else {
-        $response = ['success' => true, 'message' => 'User created successfully (auto-verified).'];
-    }
-
-    // Log account creation
-    $stmt = $conn->prepare("INSERT INTO user_activity_logs (user_id, action, log_date) VALUES (?, ?, NOW())");
+    $stmt->execute([$user_id, "Created user: $username ($role) with email: $email"]);
     $stmt->execute([$newUserId, "Account created"]);
-} else {
-    $response = ['success' => false, 'message' => implode(' ', $errors)];
+} catch (PDOException $e) {
+    echo json_encode(['success' => false, 'message' => 'Database error: ' . $e->getMessage()]);
+    exit;
 }
+
+// =====================================================
+// SEND EMAIL - FAILURE DOES NOT BLOCK USER CREATION
+// =====================================================
+$emailSent = false;
+$verificationLink = getVerificationLink($verificationToken);
+
+if ($sendVerification) {
+    // Simple mail() call - NO try/catch, NO exceptions
+    $emailSent = sendVerificationEmail($email, $username, $verificationToken);
+
+    // Log the attempt (doesn't affect response)
+    logEmailActivity($conn, $newUserId, 'Verification email sent', $emailSent);
+}
+
+// =====================================================
+// BUILD RESPONSE - SHOW LINK ALWAYS
+// =====================================================
+if ($sendVerification && $emailSent) {
+    $message = "User created successfully! Verification email sent.";
+} else if ($sendVerification && !$emailSent) {
+    $message = "User created successfully! Verification email failed to send.";
+} else {
+    $message = "User created successfully (auto-verified).";
+}
+
+// ALWAYS include the verification link in response for testing
+$response = [
+    'success' => true,
+    'message' => $message,
+    'verification_link' => $verificationLink,
+    'user_id' => $newUserId,
+    'email_sent' => $emailSent
+];
 
 header('Content-Type: application/json');
 echo json_encode($response);

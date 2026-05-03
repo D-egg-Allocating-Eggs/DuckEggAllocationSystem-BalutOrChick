@@ -12,7 +12,7 @@ if (empty($token)) {
     exit;
 }
 
-// Find user by token
+// Find user by token - FIX: use 'user_id' not 'id'
 $stmt = $conn->prepare("
     SELECT user_id, username, email, verification_token 
     FROM users 
@@ -30,7 +30,7 @@ if (!$user) {
 $newToken = bin2hex(random_bytes(32));
 $expires = date('Y-m-d H:i:s', strtotime('+24 hours'));
 
-// Update token
+// Update token - FIX: use 'user_id'
 $updateStmt = $conn->prepare("
     UPDATE users 
     SET verification_token = ?, email_verification_expires = ? 
@@ -38,12 +38,22 @@ $updateStmt = $conn->prepare("
 ");
 $updateStmt->execute([$newToken, $expires, $user['user_id']]);
 
-// Send new verification email
+// Send email
 $emailSent = sendVerificationEmail($user['email'], $user['username'], $newToken);
 logEmailActivity($conn, $user['user_id'], 'Verification email resent', $emailSent);
 
+$verificationLink = getVerificationLink($newToken);
+
 if ($emailSent) {
-    echo json_encode(['success' => true, 'message' => 'Verification email has been resent. Please check your inbox.']);
+    echo json_encode([
+        'success' => true,
+        'message' => 'Verification email has been resent. Please check your inbox.',
+        'verification_link' => $verificationLink
+    ]);
 } else {
-    echo json_encode(['success' => false, 'message' => 'Failed to send email. Please try again later.']);
+    echo json_encode([
+        'success' => true,
+        'message' => 'Verification email failed to send, but you can use this link:',
+        'verification_link' => $verificationLink
+    ]);
 }

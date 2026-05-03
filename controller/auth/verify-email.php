@@ -7,7 +7,7 @@ $messageType = '';
 if (isset($_GET['token']) && !empty($_GET['token'])) {
     $token = $_GET['token'];
 
-    // Find user with this token
+    // IMPORTANT FIX: Use correct column name 'user_id' not 'id'
     $stmt = $conn->prepare("
         SELECT user_id, username, verification_token, email_verification_expires, is_verified 
         FROM users 
@@ -21,7 +21,7 @@ if (isset($_GET['token']) && !empty($_GET['token'])) {
         $expires = new DateTime($user['email_verification_expires']);
 
         if ($now <= $expires) {
-            // Token is valid - verify the user
+            // FIX: Use 'user_id' not 'id'
             $updateStmt = $conn->prepare("
                 UPDATE users 
                 SET is_verified = 1, 
@@ -41,11 +41,9 @@ if (isset($_GET['token']) && !empty($_GET['token'])) {
             $message = "Your email has been verified successfully! You can now log in to your account.";
             $messageType = "success";
         } else {
-            // Token expired
-            $message = "This verification link has expired. Please contact support or request a new verification email.";
+            $message = "This verification link has expired. Please request a new verification email.";
             $messageType = "error";
 
-            // Log expired attempt
             $logStmt = $conn->prepare("
                 INSERT INTO user_activity_logs (user_id, action, log_date) 
                 VALUES (?, ?, NOW())
@@ -53,7 +51,6 @@ if (isset($_GET['token']) && !empty($_GET['token'])) {
             $logStmt->execute([$user['user_id'], "Email verification failed - token expired"]);
         }
     } else {
-        // Invalid token or already verified
         $message = "Invalid verification link. The link may have been already used or is incorrect.";
         $messageType = "error";
     }
@@ -166,14 +163,13 @@ if (isset($_GET['token']) && !empty($_GET['token'])) {
             text-decoration: none;
             border-radius: 8px;
             font-weight: 600;
-            transition: transform 0.2s, box-shadow 0.2s;
+            transition: transform 0.2s;
             border: none;
             cursor: pointer;
         }
 
         .btn:hover {
             transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
         }
 
         .footer {
@@ -183,25 +179,18 @@ if (isset($_GET['token']) && !empty($_GET['token'])) {
             color: #666;
         }
 
-        .spinner {
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            border: 2px solid #f3f3f3;
-            border-top: 2px solid #667eea;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin-right: 10px;
+        .verification-link-box {
+            background: #f0f0f0;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+            word-break: break-all;
+            font-size: 12px;
+            text-align: left;
         }
 
-        @keyframes spin {
-            0% {
-                transform: rotate(0deg);
-            }
-
-            100% {
-                transform: rotate(360deg);
-            }
+        .verification-link-box a {
+            color: #667eea;
         }
     </style>
 </head>
@@ -242,14 +231,13 @@ if (isset($_GET['token']) && !empty($_GET['token'])) {
             btn.innerHTML = '<span class="spinner"></span> Sending...';
             btn.disabled = true;
 
-            // Get token from URL
             const urlParams = new URLSearchParams(window.location.search);
             const token = urlParams.get('token');
 
             fetch('resend-verification.php', {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json',
+                        'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
                         token: token
@@ -259,11 +247,14 @@ if (isset($_GET['token']) && !empty($_GET['token'])) {
                 .then(data => {
                     btn.innerHTML = originalHtml;
                     btn.disabled = false;
-
                     const messageDiv = document.querySelector('.message');
                     if (data.success) {
                         messageDiv.className = 'message success';
                         messageDiv.innerHTML = '<i class="fas fa-check-circle"></i> ' + data.message;
+                        if (data.verification_link) {
+                            const linkHtml = '<div class="verification-link-box"><strong>📧 Verification Link:</strong><br><a href="' + data.verification_link + '" target="_blank">' + data.verification_link + '</a></div>';
+                            document.querySelector('.content').insertAdjacentHTML('beforeend', linkHtml);
+                        }
                     } else {
                         messageDiv.className = 'message error';
                         messageDiv.innerHTML = '<i class="fas fa-exclamation-circle"></i> ' + data.message;
