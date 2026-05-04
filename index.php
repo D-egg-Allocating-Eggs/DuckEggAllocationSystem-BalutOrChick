@@ -7,7 +7,8 @@
     <title>Login · modern refresh</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <link rel="stylesheet" href="assets/users/css/index.css">
 </head>
@@ -22,36 +23,46 @@
         $error = '';
 
         if (isset($_POST['login'])) {
-            $username = $_POST['username'];
-            $password = $_POST['password'];
+            // FIXED: Use login_input instead of username
+            $loginInput = trim($_POST['login_input'] ?? '');
+            $password = $_POST['password'] ?? '';
 
-            $stmt = $conn->prepare("SELECT * FROM users WHERE username = ?");
-            $stmt->execute([$username]);
-            $user = $stmt->fetch(PDO::FETCH_ASSOC);
-
-            if ($user && password_verify($password, $user['password'])) {
-                // CHECK IF EMAIL IS VERIFIED
-                if ($user['is_verified'] == 0) {
-                    $error = "Invalid credentials or email not verified! Please check your email for verification link.";
-                } else {
-                    $_SESSION['user_id'] = $user['user_id'];
-                    $_SESSION['user_role'] = $user['user_role'];
-                    $_SESSION['user_name'] = $user['username'];
-
-                    // Redirect based on role
-                    if ($user['user_role'] === 'admin') {
-                        header("Location: view/admin/dashboard.php");
-                        exit;
-                    } elseif ($user['user_role'] === 'manager') {
-                        header("Location: view/manager/dashboard.php");
-                        exit;
-                    } else {
-                        header("Location: view/user/dashboard.php");
-                        exit;
-                    }
-                }
+            // Validation
+            if (empty($loginInput) || empty($password)) {
+                $error = "Please enter both username/email and password!";
             } else {
-                $error = "Invalid username or password!";
+                // FIXED: Query that checks BOTH username AND email fields
+                // Using LIMIT 1 for security and performance
+                $stmt = $conn->prepare("SELECT * FROM users WHERE username = ? OR email = ? LIMIT 1");
+                $stmt->execute([$loginInput, $loginInput]);
+                $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+                // Verify password and user exists
+                if ($user && password_verify($password, $user['password'])) {
+                    // CHECK IF EMAIL IS VERIFIED (keeping existing logic)
+                    if ($user['is_verified'] == 0) {
+                        $error = "Invalid credentials or email not verified! Please check your email for verification link.";
+                    } else {
+                        // Set session variables (keeping existing structure)
+                        $_SESSION['user_id'] = $user['user_id'];
+                        $_SESSION['user_role'] = $user['user_role'];
+                        $_SESSION['user_name'] = $user['username'];
+
+                        // Redirect based on role (keeping existing logic)
+                        if ($user['user_role'] === 'admin') {
+                            header("Location: view/admin/dashboard.php");
+                            exit;
+                        } elseif ($user['user_role'] === 'manager') {
+                            header("Location: view/manager/dashboard.php");
+                            exit;
+                        } else {
+                            header("Location: view/user/dashboard.php");
+                            exit;
+                        }
+                    }
+                } else {
+                    $error = "Invalid username/email or password!";
+                }
             }
         }
         ?>
@@ -66,7 +77,10 @@
         <form method="post">
             <div class="input-group">
                 <i class="fas fa-user"></i>
-                <input type="text" name="username" placeholder="Username" value="<?php echo isset($_POST['username']) ? htmlspecialchars($_POST['username']) : ''; ?>" required>
+                <!-- FIXED: Changed name to 'login_input' and placeholder to reflect both options -->
+                <input type="text" name="login_input" placeholder="Username or Email"
+                    value="<?php echo isset($_POST['login_input']) ? htmlspecialchars($_POST['login_input']) : ''; ?>"
+                    required>
             </div>
 
             <div class="input-group">
