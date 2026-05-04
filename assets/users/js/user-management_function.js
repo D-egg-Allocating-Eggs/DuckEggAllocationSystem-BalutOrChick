@@ -314,7 +314,7 @@ function openAddModal() {
     document.getElementById('userModal').classList.add('active');
 }
 
-// Fix saveUser function to handle email properly
+// Fix saveUser function to handle auto-verified users properly
 async function saveUser(event) {
     event.preventDefault();
 
@@ -380,10 +380,14 @@ async function saveUser(event) {
         if (result.success) {
             closeModal();
 
-            if (result.verification_link && !result.email_sent) {
-                showVerificationLinkDialog(result.message, result.verification_link);
-            } else if (result.verification_link && result.email_sent) {
-                showVerificationLinkDialog(result.message + " (Check spam folder)", result.verification_link);
+            // Handle different response types
+            if (result.auto_verified) {
+                // User is auto-verified - no verification needed
+                showToast(result.message, 'success');
+                setTimeout(() => location.reload(), 2000);
+            } else if (result.verification_link) {
+                // Show verification link dialog
+                showVerificationLinkDialog(result.message, result.verification_link, result.email_sent);
             } else {
                 showToast(result.message, 'success');
                 setTimeout(() => location.reload(), 2000);
@@ -400,7 +404,8 @@ async function saveUser(event) {
     }
 }
 
-function showVerificationLinkDialog(message, verificationLink) {
+// Updated showVerificationLinkDialog function
+function showVerificationLinkDialog(message, verificationLink, emailSent = false) {
     const overlay = document.createElement('div');
     overlay.id = 'verificationLinkModal';
     overlay.style.cssText = `
@@ -427,10 +432,14 @@ function showVerificationLinkDialog(message, verificationLink) {
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     `;
 
+    const emailStatusIcon = emailSent ? 'fa-check-circle' : 'fa-exclamation-triangle';
+    const emailStatusColor = emailSent ? '#10b981' : '#f59e0b';
+    const emailStatusText = emailSent ? 'Email sent successfully' : 'Email sending failed (check your mail configuration)';
+
     modal.innerHTML = `
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
             <h3 style="margin: 0; color: #10b981;">
-                <i class="fas fa-check-circle"></i> ${message.includes('failed') ? 'User Created (Email Failed)' : 'User Created Successfully'}
+                <i class="fas fa-check-circle"></i> User Created Successfully
             </h3>
             <button onclick="this.closest('#verificationLinkModal').remove()" style="background: none; border: none; font-size: 24px; cursor: pointer;">&times;</button>
         </div>
@@ -438,9 +447,13 @@ function showVerificationLinkDialog(message, verificationLink) {
         <div style="margin-bottom: 20px;">
             <p style="color: #666; margin-bottom: 12px;">${escapeHtml(message)}</p>
             
-            ${!message.includes('auto-verified') ? `
-                <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 16px; margin-top: 16px;">
-                    <p style="margin: 0 0 8px 0; font-weight: 600; color: #166534;">
+            <div style="background: ${emailSent ? '#f0fdf4' : '#fffbeb'}; border: 1px solid ${emailSent ? '#bbf7d0' : '#fde68a'}; border-radius: 8px; padding: 16px; margin-top: 16px;">
+                <p style="margin: 0 0 8px 0; font-weight: 600; color: ${emailSent ? '#166534' : '#92400e'};">
+                    <i class="fas ${emailStatusIcon}"></i> ${emailStatusText}
+                </p>
+                
+                <div style="margin-top: 12px;">
+                    <p style="margin: 0 0 8px 0; font-weight: 600; color: #1e293b;">
                         <i class="fas fa-link"></i> Verification Link (Click to copy):
                     </p>
                     <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
@@ -455,13 +468,7 @@ function showVerificationLinkDialog(message, verificationLink) {
                         <i class="fas fa-info-circle"></i> Click the link or copy it to your browser to verify the email address.
                     </p>
                 </div>
-            ` : `
-                <div style="background: #e0f2fe; border: 1px solid #bae6fd; border-radius: 8px; padding: 16px; margin-top: 16px;">
-                    <p style="margin: 0; color: #0369a1;">
-                        <i class="fas fa-info-circle"></i> User is auto-verified. No email verification needed.
-                    </p>
-                </div>
-            `}
+            </div>
         </div>
         
         <div style="display: flex; gap: 12px; justify-content: flex-end;">

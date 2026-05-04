@@ -16,7 +16,6 @@ if (!isset($_SESSION['user_id'])) {
 // Only accept POST requests
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
-    // FIXED: Added missing '=>'
     echo json_encode(['success' => false, 'message' => 'Method not allowed']);
     exit;
 }
@@ -28,7 +27,7 @@ $username = trim($_POST['username'] ?? '');
 $email = trim($_POST['email'] ?? '');
 $password = $_POST['password'] ?? '';
 $role = trim($_POST['role'] ?? 'user');
-$sendVerification = isset($_POST['send_verification']) ? (bool)$_POST['send_verification'] : true;
+$sendVerification = isset($_POST['send_verification']) && $_POST['send_verification'] == '1';
 
 // Role restrictions
 if ($user_role !== 'admin' && $role !== 'user') {
@@ -38,19 +37,24 @@ if ($user_role !== 'admin' && $role !== 'user') {
 
 // Validation
 $errors = [];
-if (strlen($username) < 3) $errors[] = 'Username must be at least 3 characters.';
-if (strlen($password) < 6) $errors[] = 'Password must be at least 6 characters.';
-if (!filter_var($email, FILTER_VALIDATE_EMAIL)) $errors[] = 'Please enter a valid email address.';
+if (strlen($username) < 3)
+    $errors[] = 'Username must be at least 3 characters.';
+if (strlen($password) < 6)
+    $errors[] = 'Password must be at least 6 characters.';
+if (!filter_var($email, FILTER_VALIDATE_EMAIL))
+    $errors[] = 'Please enter a valid email address.';
 
 // Check if username exists
 $chk = $conn->prepare("SELECT user_id FROM users WHERE username = ?");
 $chk->execute([$username]);
-if ($chk->fetch()) $errors[] = 'Username already exists.';
+if ($chk->fetch())
+    $errors[] = 'Username already exists.';
 
 // Check if email exists  
 $chk = $conn->prepare("SELECT user_id FROM users WHERE email = ?");
 $chk->execute([$email]);
-if ($chk->fetch()) $errors[] = 'Email already exists.';
+if ($chk->fetch())
+    $errors[] = 'Email already exists.';
 
 if (!empty($errors)) {
     echo json_encode(['success' => false, 'message' => implode(' ', $errors)]);
@@ -60,13 +64,23 @@ if (!empty($errors)) {
 // Generate password hash
 $hash = password_hash($password, PASSWORD_DEFAULT);
 
-// Generate verification token (64 chars SHA-256 style)
-$verificationToken = bin2hex(random_bytes(32));
-$expires = date('Y-m-d H:i:s', strtotime('+24 hours'));
-$isVerified = 0;
+// =====================================================
+// CONDITIONAL VERIFICATION LOGIC - THE FIX
+// =====================================================
+if ($sendVerification) {
+    // User needs to verify email
+    $verificationToken = bin2hex(random_bytes(32));
+    $isVerified = 0;
+    $expires = date('Y-m-d H:i:s', strtotime('+24 hours'));
+} else {
+    // User is auto-verified - NO token, NO verification needed
+    $verificationToken = null;
+    $isVerified = 1;
+    $expires = null;
+}
 
 // =====================================================
-// INSERT USER - ALWAYS SUCCEEDS (unless DB error)
+// INSERT USER
 // =====================================================
 try {
     $ins = $conn->prepare("
@@ -80,45 +94,53 @@ try {
     // Log user creation
     $stmt = $conn->prepare("INSERT INTO user_activity_logs (user_id, action, log_date) VALUES (?, ?, NOW())");
     $stmt->execute([$user_id, "Created user: $username ($role) with email: $email"]);
-    $stmt->execute([$newUserId, "Account created"]);
+
+    $verificationStatus = $sendVerification ? "needs verification" : "auto-verified";
+    $stmt->execute([$newUserId, "Account created ($verificationStatus)"]);
+
 } catch (PDOException $e) {
     echo json_encode(['success' => false, 'message' => 'Database error: ' . $e->getMessage()]);
     exit;
 }
 
 // =====================================================
-// SEND EMAIL - FAILURE DOES NOT BLOCK USER CREATION
+// HANDLE VERIFICATION EMAIL (ONLY IF CHECKED)
 // =====================================================
+$verificationLink = null;
 $emailSent = false;
-$verificationLink = getVerificationLink($verificationToken);
 
 if ($sendVerification) {
-    // Simple mail() call - NO try/catch, NO exceptions
+    $verificationLink = getVerificationLink($verificationToken);
     $emailSent = sendVerificationEmail($email, $username, $verificationToken);
-
-    // Log the attempt (doesn't affect response)
     logEmailActivity($conn, $newUserId, 'Verification email sent', $emailSent);
 }
 
 // =====================================================
-// BUILD RESPONSE - SHOW LINK ALWAYS
+// BUILD RESPONSE BASED ON CHECKBOX STATE
 // =====================================================
-if ($sendVerification && $emailSent) {
-    $message = "User created successfully! Verification email sent.";
-} else if ($sendVerification && !$emailSent) {
-    $message = "User created successfully! Verification email failed to send.";
+if ($sendVerification) {
+    if ($emailSent) {
+        $message = "User created successfully! Verification email sent.";
+    } else {
+        $message = "User created successfully! Verification email failed to send.";
+    }
+    // ALWAYS include verification link for testing when checkbox is checked
+    $response = [
+        'success' => true,
+        'message' => $message,
+        'verification_link' => $verificationLink,
+        'user_id' => $newUserId,
+        'email_sent' => $emailSent
+    ];
 } else {
-    $message = "User created successfully (auto-verified).";
+    // No verification needed - user is auto-verified
+    $response = [
+        'success' => true,
+        'message' => 'User created and automatically verified. No email verification required.',
+        'user_id' => $newUserId,
+        'auto_verified' => true
+    ];
 }
-
-// ALWAYS include the verification link in response for testing
-$response = [
-    'success' => true,
-    'message' => $message,
-    'verification_link' => $verificationLink,
-    'user_id' => $newUserId,
-    'email_sent' => $emailSent
-];
 
 header('Content-Type: application/json');
 echo json_encode($response);
