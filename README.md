@@ -28,41 +28,65 @@ This system is designed to:
 
 ```bash
 DuckEggAllocationSystem-BalutOrChick
-│
-├── assets/                 # CSS and JavaScript files per role
-│   ├── admin/
-│   ├── manager/
-│   ├── user/
-│   └── users/
-│
-├── controller/             # System logic and request handling
-│   ├── auth/
-│   ├── user-create.php
-│   ├── user-update.php
-│   ├── user-delete.php
-│   ├── user-view.php
-│   └── user-export.php
-│
-├── db/                     # Database scripts
-│   ├── schema.sql
-│   ├── insert.sql
-│   └── db_delete.sql
-│
-├── model/                  # Database configuration
-│   └── config.php
-│
-├── view/                   # UI pages (role-based dashboards)
-│   ├── admin/
-│   ├── manager/
-│   ├── user/
-│   └── users/
-│
-├── index.php               # Entry point of the system
-├── index.js                # JavaScript entry script
-├── package.json            # Project dependencies
-├── package-lock.json
+├── assets
+│   ├── admin
+│   │   ├── css
+│   │   │   └── admin_style.css
+│   │   └── js
+│   │       └── admin_function.js
+│   ├── manager
+│   │   ├── css
+│   │   │   └── manager_style.css
+│   │   └── js
+│   │       └── manager_function.js
+│   ├── user
+│   │   ├── css
+│   │   │   └── user_style.css
+│   │   └── js
+│   │       └── user_function.js
+│   └── users
+│       ├── css
+│       │   ├── index.css
+│       │   └── user-management_style.css
+│       └── js
+│           └── user-management_function.js
+├── branch_guide.txt
 ├── collaborators.txt
-└── branch_guide.txt
+├── controller
+│   ├── auth
+│   │   ├── resend-verification.php
+│   │   ├── signout.php
+│   │   └── verify-email.php
+│   ├── script.js
+│   ├── user-create.php
+│   ├── user-delete.php
+│   ├── user-export.php
+│   ├── user-update.php
+│   └── user-view.php
+├── db
+│   ├── db_delete.sql
+│   ├── email_verify.sql
+│   ├── insert.sql
+│   └── schema.sql
+├── debug_check.php
+├── index.js
+├── index.php
+├── model
+│   ├── config.php
+│   ├── email_helper.php
+│   └── temp.file
+├── package-lock.json
+├── package.json
+├── README.md
+└── view
+    ├── admin
+    │   └── dashboard.php
+    ├── manager
+    │   └── dashboard.php
+    ├── user
+    │   └── dashboard.php
+    └── users
+        └── user-management.php
 ```
 
 ## 🏗 System Architecture
