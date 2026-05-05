@@ -10,7 +10,7 @@ if (!isset($_SESSION['user_id'])) {
 $user_role = $_SESSION['user_role'];
 $user_id = $_SESSION['user_id'];
 
-// Helper: format date/time properly (same as dashboard)
+// Helper: format date/time properly
 function formatDateTime($datetime)
 {
     if (!$datetime) return 'Never';
@@ -18,7 +18,7 @@ function formatDateTime($datetime)
     return date('M j, Y g:i A', $timestamp);
 }
 
-// Helper: time ago (same as dashboard)
+// Helper: time ago
 function timeAgo($datetime)
 {
     if (!$datetime) return 'Never';
@@ -38,10 +38,12 @@ function timeAgo($datetime)
 $stmt = $conn->prepare("INSERT INTO user_activity_logs (user_id, action, log_date) VALUES (?, ?, NOW())");
 $stmt->execute([$user_id, ucfirst($user_role) . " accessed User Management"]);
 
-// Fetch users based on role
+// Fetch users based on role with proper role-based data display
 if ($user_role === 'admin') {
+    // Admin sees all users with full data including verification status and last activity
     $stmt = $conn->prepare("
-        SELECT u.user_id, u.username, u.user_role, u.created_at,
+        SELECT u.user_id, u.username, u.email, u.user_role, u.is_verified, u.created_at,
+               (SELECT MAX(log_date) FROM user_activity_logs WHERE user_id = u.user_id) as last_activity,
                COALESCE(SUM(e.balut_count), 0) AS total_balut,
                COALESCE(SUM(e.chick_count), 0) AS total_chicks,
                COALESCE(SUM(e.failed_count), 0) AS total_failed,
@@ -53,17 +55,26 @@ if ($user_role === 'admin') {
     ");
     $stmt->execute();
     $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} else {
+} elseif ($user_role === 'manager') {
+    // Manager sees limited user data (no email, limited activity)
     $stmt = $conn->prepare("
         SELECT u.user_id, u.username, u.user_role, u.created_at,
-               COALESCE(SUM(e.balut_count), 0) AS total_balut,
-               COALESCE(SUM(e.chick_count), 0) AS total_chicks,
-               COALESCE(SUM(e.failed_count), 0) AS total_failed,
+               (SELECT MAX(log_date) FROM user_activity_logs WHERE user_id = u.user_id) as last_activity,
                COALESCE(COUNT(e.egg_id), 0) AS batch_count
         FROM users u
         LEFT JOIN egg e ON u.user_id = e.user_id
         WHERE u.user_role = 'user' OR u.user_id = ?
         GROUP BY u.user_id
+        ORDER BY u.created_at DESC
+    ");
+    $stmt->execute([$user_id]);
+    $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} else {
+    // Regular user sees only basic info
+    $stmt = $conn->prepare("
+        SELECT u.user_id, u.username, u.user_role, u.created_at
+        FROM users u
+        WHERE u.user_id = ?
         ORDER BY u.created_at DESC
     ");
     $stmt->execute([$user_id]);
@@ -75,13 +86,14 @@ $selected_user_id = isset($_GET['view_user']) ? (int)$_GET['view_user'] : 0;
 $userEggRecords = [];
 $selectedUsername = '';
 $userActivities = [];
+$selectedUserData = [];
 $canView = false;
 
 if ($selected_user_id > 0) {
     if ($user_role === 'admin') {
         $canView = true;
     } else {
-        $stmt = $conn->prepare("SELECT user_role FROM users WHERE user_id = ?");
+        $stmt = $conn->prepare("SELECT user_role, is_verified, email, created_at FROM users WHERE user_id = ?");
         $stmt->execute([$selected_user_id]);
         $targetUser = $stmt->fetch(PDO::FETCH_ASSOC);
         if ($targetUser && ($targetUser['user_role'] === 'user' || $selected_user_id == $user_id)) {
@@ -90,11 +102,17 @@ if ($selected_user_id > 0) {
     }
 
     if ($canView) {
-        $stmt = $conn->prepare("SELECT username, user_role, created_at FROM users WHERE user_id = ?");
+        // Get user data with field restrictions based on viewer role
+        if ($user_role === 'admin') {
+            $stmt = $conn->prepare("SELECT username, email, user_role, is_verified, created_at FROM users WHERE user_id = ?");
+        } else {
+            $stmt = $conn->prepare("SELECT username, user_role, created_at FROM users WHERE user_id = ?");
+        }
         $stmt->execute([$selected_user_id]);
-        $userData = $stmt->fetch(PDO::FETCH_ASSOC);
-        $selectedUsername = $userData['username'] ?? '';
+        $selectedUserData = $stmt->fetch(PDO::FETCH_ASSOC);
+        $selectedUsername = $selectedUserData['username'] ?? '';
 
+        // Get egg records (basic info for all roles)
         $stmt = $conn->prepare("
             SELECT e.*, 
                    DATEDIFF(NOW(), e.date_started_incubation) as days_in_incubation
@@ -105,14 +123,25 @@ if ($selected_user_id > 0) {
         $stmt->execute([$selected_user_id]);
         $userEggRecords = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        $stmt = $conn->prepare("
-            SELECT l.*, u.username
-            FROM user_activity_logs l
-            LEFT JOIN users u ON l.user_id = u.user_id
-            WHERE l.user_id = ?
-            ORDER BY l.log_date DESC
-            LIMIT 50
-        ");
+        // Get activity logs (limited for non-admin)
+        if ($user_role === 'admin') {
+            $stmt = $conn->prepare("
+                SELECT l.*, u.username
+                FROM user_activity_logs l
+                LEFT JOIN users u ON l.user_id = u.user_id
+                WHERE l.user_id = ?
+                ORDER BY l.log_date DESC
+                LIMIT 50
+            ");
+        } else {
+            $stmt = $conn->prepare("
+                SELECT action, log_date
+                FROM user_activity_logs 
+                WHERE user_id = ?
+                ORDER BY log_date DESC
+                LIMIT 20
+            ");
+        }
         $stmt->execute([$selected_user_id]);
         $userActivities = $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
@@ -124,8 +153,6 @@ $totalBatches = $conn->query("SELECT COUNT(*) FROM egg")->fetchColumn();
 $totalEggs = $conn->query("SELECT SUM(total_egg) FROM egg")->fetchColumn() ?: 0;
 $totalChicks = $conn->query("SELECT SUM(chick_count) FROM egg")->fetchColumn() ?: 0;
 $totalBalut = $conn->query("SELECT SUM(balut_count) FROM egg")->fetchColumn() ?: 0;
-
-$activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'users';
 ?>
 
 <!DOCTYPE html>
@@ -195,7 +222,7 @@ $activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'users';
             <div class="top-bar">
                 <div class="welcome-text">
                     <h1>User Management</h1>
-                    <p><i class="fas fa-users-cog"></i> <?= $user_role === 'admin' ? 'Full access to manage all users and system records' : 'Manage regular users and view operational records' ?></p>
+                    <p><i class="fas fa-users-cog"></i> <?= $user_role === 'admin' ? 'Full access to manage all users and system records' : ($user_role === 'manager' ? 'Manage regular users and view operational records' : 'View your account information') ?></p>
                 </div>
                 <div class="date-badge">
                     <i class="far fa-calendar-alt"></i> <?= date('M d, Y') ?>
@@ -238,9 +265,11 @@ $activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'users';
             <?php if (!$selected_user_id): ?>
                 <div class="action-bar">
                     <div class="action-bar-left">
-                        <button class="btn btn-primary" onclick="openAddModal()">
-                            <i class="fas fa-user-plus"></i> Add New User
-                        </button>
+                        <?php if ($user_role === 'admin' || $user_role === 'manager'): ?>
+                            <button class="btn btn-primary" onclick="openAddModal()">
+                                <i class="fas fa-user-plus"></i> Add New User
+                            </button>
+                        <?php endif; ?>
                     </div>
                     <div class="search-box">
                         <input type="text" id="searchInput" placeholder="Search by username..." onkeyup="filterUsers()">
@@ -256,11 +285,24 @@ $activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'users';
                             <thead>
                                 <tr>
                                     <th>User</th>
+                                    <?php if ($user_role === 'admin'): ?>
+                                        <th>Email</th>
+                                    <?php endif; ?>
                                     <th>Role</th>
+                                    <?php if ($user_role === 'admin'): ?>
+                                        <th>Verified</th>
+                                        <th>Last Activity</th>
+                                    <?php elseif ($user_role === 'manager'): ?>
+                                        <th>Last Activity</th>
+                                    <?php endif; ?>
                                     <th>Joined</th>
-                                    <th>Batches</th>
-                                    <th>Total Balut</th>
-                                    <th>Total Chicks</th>
+                                    <?php if ($user_role === 'admin'): ?>
+                                        <th>Batches</th>
+                                        <th>Total Balut</th>
+                                        <th>Total Chicks</th>
+                                    <?php elseif ($user_role === 'manager'): ?>
+                                        <th>Batches</th>
+                                    <?php endif; ?>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
@@ -273,16 +315,35 @@ $activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'users';
                                                 <div><?= htmlspecialchars($u['username']) ?></div>
                                             </div>
                                         </td>
+                                        <?php if ($user_role === 'admin'): ?>
+                                            <td><?= htmlspecialchars($u['email']) ?></td>
+                                        <?php endif; ?>
                                         <td><span class="role-badge <?= $u['user_role'] ?>"><?= ucfirst($u['user_role']) ?></span></td>
+                                        <?php if ($user_role === 'admin'): ?>
+                                            <td>
+                                                <?php if ($u['is_verified']): ?>
+                                                    <span class="badge badge-verified"><i class="fas fa-check-circle"></i> Verified</span>
+                                                <?php else: ?>
+                                                    <span class="badge badge-unverified"><i class="fas fa-clock"></i> Not Verified</span>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td class="activity-time"><?= !empty($u['last_activity']) ? timeAgo($u['last_activity']) : 'No activity' ?></td>
+                                        <?php elseif ($user_role === 'manager' && isset($u['last_activity'])): ?>
+                                            <td class="activity-time"><?= !empty($u['last_activity']) ? timeAgo($u['last_activity']) : 'No activity' ?></td>
+                                        <?php endif; ?>
                                         <td><?= date('M d, Y', strtotime($u['created_at'])) ?></td>
-                                        <td><?= number_format($u['batch_count']) ?></td>
-                                        <td><strong><?= number_format($u['total_balut']) ?></strong></td>
-                                        <td><?= number_format($u['total_chicks']) ?></td>
+                                        <?php if ($user_role === 'admin'): ?>
+                                            <td><?= number_format($u['batch_count']) ?></td>
+                                            <td><strong><?= number_format($u['total_balut']) ?></strong></td>
+                                            <td><?= number_format($u['total_chicks']) ?></td>
+                                        <?php elseif ($user_role === 'manager' && isset($u['batch_count'])): ?>
+                                            <td><?= number_format($u['batch_count']) ?></td>
+                                        <?php endif; ?>
                                         <td>
                                             <div class="action-btns">
-                                                <a href="?view_user=<?= $u['user_id'] ?>" class="btn btn-outline btn-sm">
+                                                <button class="btn btn-outline btn-sm" onclick="openViewModal(<?= $u['user_id'] ?>)">
                                                     <i class="fas fa-eye"></i> View
-                                                </a>
+                                                </button>
                                                 <?php if ($user_role === 'admin' || ($user_role === 'manager' && $u['user_role'] === 'user')): ?>
                                                     <button class="btn btn-warning btn-sm" onclick="openEditModal(<?= $u['user_id'] ?>, '<?= addslashes($u['username']) ?>', '<?= $u['user_role'] ?>')">
                                                         <i class="fas fa-edit"></i> Edit
@@ -422,13 +483,23 @@ $activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'users';
         </main>
     </div>
 
-    <!-- Loading Overlay -->
-    <div id="loadingOverlay" class="loading-overlay">
-        <div class="loading-spinner"></div>
-        <div class="loading-text">Generating PDF...</div>
+    <!-- View User Modal (Enhanced) -->
+    <div id="viewUserModal" class="modal">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3><i class="fas fa-user-circle"></i> User Details</h3>
+                <button class="close" onclick="closeViewModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="viewModalBody">
+                <div class="loading-spinner-small" style="text-align: center; padding: 2rem;">Loading...</div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closeViewModal()">Close</button>
+            </div>
+        </div>
     </div>
 
-    <!-- Modal -->
+    <!-- Add/Edit User Modal -->
     <div id="userModal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -439,12 +510,18 @@ $activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'users';
                 <input type="hidden" id="editUserId" value="">
                 <div class="modal-body">
                     <div class="form-group">
-                        <label>Username</label>
+                        <label>Username *</label>
                         <input type="text" id="modalUsername" name="username" required minlength="3" maxlength="50">
                     </div>
+                    <div class="form-group" id="emailFieldGroup">
+                        <label>Email Address *</label>
+                        <input type="email" id="modalEmail" name="email" placeholder="user@example.com">
+                        <small style="color: #666;">A verification email will be sent to this address</small>
+                    </div>
                     <div class="form-group">
-                        <label id="passwordLabel">Password</label>
-                        <input type="password" id="modalPassword" name="password">
+                        <label id="passwordLabel">Password *</label>
+                        <input type="password" id="modalPassword" name="password" minlength="6">
+                        <small style="color: #666;">Minimum 6 characters</small>
                     </div>
                     <div class="form-group">
                         <label>Role</label>
@@ -458,6 +535,15 @@ $activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'users';
                             <?php endif; ?>
                         </select>
                     </div>
+                    <div class="form-group" id="verificationCheckboxGroup">
+                        <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                            <input type="checkbox" id="modalSendVerification" name="send_verification" value="1" checked style="width: auto;">
+                            <span>Send email verification</span>
+                        </label>
+                        <small style="color: #666; display: block; margin-top: 5px;">
+                            If unchecked, user will be auto-verified (no email sent)
+                        </small>
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
@@ -469,6 +555,12 @@ $activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'users';
         </div>
     </div>
 
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay" class="loading-overlay">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">Generating PDF...</div>
+    </div>
+
     <!-- Toast -->
     <div id="toast" class="toast">
         <i class="fas fa-check-circle"></i>
@@ -476,8 +568,6 @@ $activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'users';
     </div>
 
     <script src="../../assets/users/js/user-management_function.js" defer></script>
-
 </body>
-
 
 </html>
